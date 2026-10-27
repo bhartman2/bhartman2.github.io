@@ -1,0 +1,340 @@
+---
+title: Heart Linear
+author:
+  name: Bruce Hartman <bruce@ahartman.net
+  affiliation: University of St. Francis
+date: 2026-08-28 Revised `r format(lubridate::now(), '%H:%M:%S')`
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_float: TRUE
+    theme: flatly
+    highlight: tango
+abstract: |
+  We analyze data on heart attacks using linear regression, in an R Notebook. 
+---
+
+# Introduction
+
+We are going to analyze some data about heart attacks, including with linear regression. We will demonstrate how to build an R Notebook to do this. See ([UCI, 2013](#r1)) for information about the source of the data.
+
+# Packages
+In R we always use certain packages to make life easier and more up to date. I copied this code from the Basic Notebook Template to get the right ones.  We may add some more to our required list as time goes on. 
+
+```{r}
+# install mbadtools from github, only once a term!!!
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+library(ISLR2)
+library(mbadtools, quietly=TRUE)
+```
+
+# Data
+
+We will load the Heart data from a csv file you downloaded into your  data folder.  We will use the *Import Dataset* button in the upper right panel. We will be sure to copy the code generated and place it in the notebook, so the notebook can run on its own.
+
+```{r message=FALSE}
+library(readr)
+Heart <- read_csv("Heart.csv")
+```
+
+It works with no modifications, and creates an object named `Heart` that contains the data. 
+
+# Data Description
+First we use `glimpse()` to see what the data set looks like.
+```{r}
+Heart %>% glimpse
+```
+
+You can see that the first column has a funny name.  It seems to just count the observations, all 303 of  them.  
+
+Let's change the name of the first column to `Obs` for observation.
+```{r}
+Heart = Heart %>% rename(Obs = `...1`)
+Heart %>% glimpse
+```
+
+To get a nice display that lets you page through all the data, just call out the name of the data object.
+```{r}
+Heart
+```
+
+One good idea is to run a `summary()` of the data.
+```{r}
+Heart %>% summary
+```
+
+A better way is to use the `skim` function. 
+
+```{r}
+Heart %>% skim
+```
+
+This gives a nice summary of the data, including the number of observations, the number of missing values, and the type of each variable. 
+Then it puts up a page for each type of variable with more summary stats than `summary()`.
+
+# Data Wrangling
+
+## Missing Values
+The `Ca` column has some NAs in it. That means `Ca` data is not available for those people. That could affect calculations such as means. So does the categorical variable `Thal`.
+
+What value should be put for the missing data? Or should those observations just be ignored?
+
+This is a human choice, not a computer choice.  It depends on our purpose.  We might have enough data if we just left those observations out.  In addition, some R functions, for example `lm()`, leave them out automatically, while others do not. You can check by reading the documentation for each function as you are ready to use it.
+
+You can use the `na.omit()` function to leave out those observations (rows).
+
+```{r}
+Heart = Heart %>% na.omit
+Heart %>% skim
+```
+
+Now there are 297 records and no rows with missing values. 
+
+## Character Variables
+
+`ChestPain`, `Thal`, and `AHD` are character variables, from looking at the `skim` display. These can have several values. How many unique values? Here the first way is to use the `distinct()` function on  each column and look.
+
+The second way is to select the three character columns and use `sapply()` to apply the `unique()` function to all three columns. we get a list of the three columns with their unique values.
+
+```{r}
+Heart %>% distinct(ChestPain)
+Heart %>% distinct(Thal)
+Heart %>% distinct(AHD)
+# general way for all character columns
+Heart %>% select(where(is.character)) %>% sapply(FUN=unique)
+```
+
+Often character variables with not too many unique values can be turned into *factors*, which are encoded with numbers (0,1,2...) but retain the character description. For instance `AHD` will get the following assignment.
+```{r}
+Heart %>% pull(AHD) %>% factor %>% contrasts
+```
+
+R will convert these variables to factor variables (assign numeric codes to them while keeping the names matched up to the codes), when it has to, or you can force it to do that.
+
+We will show how to convert them.
+
+```{r}
+Heart = Heart %>% mutate(ChestPain=as.factor(ChestPain),
+                 Thal=as.factor(Thal),
+                 AHD=as.factor(AHD)) 
+Heart %>% glimpse
+```
+
+Notice how the type column now says *<fct>* instead of *<chr>*.
+
+## Binary Variables
+
+Some of the variables are just 0-1 binary variables. We can see `Sex`, `Fbs`, and `ExAng` share this trait. Checking for unique values, 
+```{r}
+Heart %>% distinct(Sex)
+Heart %>% distinct(Fbs)
+Heart %>% distinct(ExAng)
+```
+
+These are already suitable for factors. We will convert them also.
+
+```{r}
+Heart = Heart %>% mutate(Sex=as.factor(Sex),
+                 Fbs=as.factor(Fbs),
+                 ExAng=as.factor(ExAng)) 
+Heart %>% glimpse
+```
+
+# Research Problem
+
+We believe that resting blood pressure might be related to high cholesterol.  
+
+- Hypothesis: As `Chol` increases, so does `RestBP`.
+
+Let's see if we can prove that hypothesis likely to be false for the sample data.  Note that we can never prove a hypothesis true, because we cannot observe the entire universe.
+
+# Visualizing
+The `ggpairs()` function gives a lot of info in one display.
+```{r}
+Heart %>% select(RestBP, Chol) %>% ggpairs(progress=F)
+```
+
+
+# Regression
+
+Does `Chol` CAUSE high `RestBP`?  We are not able to prove that without finding a biochemical mechanism. But we can find how strong the correlation is for this set of observations. So we are looking to disprove the supposed positive relation between `Chol` and `RestBP`.
+
+## Fitting a Regression
+
+Run the regression and store the results in the `fit` object.
+```{r}
+fit = lm(RestBP~Chol, data=Heart)
+```
+
+Look at the summary.
+
+```{r}
+fit %>% summary
+```
+
+The R-squared is very low, so there is probably not much relation.  The intercept is 120 (blood pressure) and the slope is .045 units of blood pressure change up for every one unit of cholesterol.  More about interpreting the regression later.
+
+## Prettier Results
+```{r}
+fit %>% tidy(conf.int=TRUE) # coefficients, standard error, t-statistic and p-value, and confidence intervals
+fit %>% glance() # overall regression quality measures
+```
+
+This `fit` regression object is very complicated, as a `glimpse()` will show:
+```{r}
+glimpse(fit)
+```
+
+We are not interested in most of it. There are ways to grab the parts we really want.
+
+## Coefficients and Confidence Intervals
+It is easy to display the coefficients and their confidence intervals, which are just as important if not more so.
+
+```{r}
+fit %>% coef()
+fit %>% confint()
+fit %>% confint() %>% round(digits=3)
+```
+
+The modern way is to use `tidy`. You can then refer to the columns by their names.
+```{r}
+fit %>% tidy(conf.int=TRUE) %>% 
+  select(term, estimate, conf.low, conf.high) 
+```
+
+## More from the Regression
+
+We will display the first 10 residuals and the first ten fitted values. You can make them look better with `broom::tidy()`, or with `as_tibble()`.
+```{r}
+residuals(fit) %>% head(10) %>% as_tibble_col(column_name="Residuals")
+fitted.values(fit) %>% head(10) %>% as_tibble_col(column_name="Fitted Values")
+```
+
+## Augment
+The modern way is to use `augment`, which adds the residuals `.resid` and fitted values `.fitted` to the original data frame, along with the original variables. This is very useful for plotting the residuals and other purposes.
+
+```{r}
+fit %>% augment
+```
+
+## Plot the Regression
+
+First we make a plot of the points and label the axes. We design and store the plot in `gp`, a `ggplot` object.
+```{r}
+gp = ggplot(Heart) +
+  geom_point(aes(x=Chol, y=RestBP)) +
+  labs(title="Resting Blood Pressure and Cholesterol", 
+       subtitle="From Heart.csv file",
+       x="Cholesterol level (mg/dL)", y="Resting Blood Pressure (mmHg)")
+gp
+```
+
+Plots are constructed of layers. In the plot above were 3 layers, each separated by a +.
+
+Now we will add more layers. The first is the regression line. The second changes the look of the plot, and the third adds some text with the slope in a fixed location.
+```{r}
+# add layer 1
+gp1 = gp + geom_abline(aes(slope=coef(fit)[2], 
+                           intercept=coef(fit)[1]),
+                       color="red", 
+                       linetype="dashed", 
+                       linewidth=1.5)
+# layer 2, add a black-and-white theme
+gp1 = gp1 +    theme_bw() 
+# add layer 3 
+gp1 = gp1 +
+   annotate("text", x=500, y=150,
+                 label=paste0("Slope=",round(coef(fit)[2],3)))
+# draw the plot
+gp1
+```
+
+The plot is a good visualization that shows there is not much dependence of blood pressure on cholesterol.
+
+## Residual Analysis
+
+It is extremely important to analyze the residuals. More next week. Here's how to do it. The default is four plots.
+
+```{r}
+fit %>% gg_residual_plots()
+```
+
+We will learn to interpret the plots later on.
+
+Partial residual plots show the residuals against each of the driver variables in the regression. Here there is only one driver.
+```{r}
+fit %>% gg_partial_residual_plots()
+```
+
+
+Another good idea is a Tukey test of curvature. To do this use the `residualPlots` function in the `car` package (loaded with `mbadtools`). Turn off the plot, which is like the one above. 
+```{r}
+fit %>% car::residualPlots(plot=F)
+```
+Interpretation later. Only one predictor variable so both entries are the same.
+
+## Visualizing the Residuals
+We can make our own plot of the residuals. We use `augment` for the data.
+
+The regression line, or prediction of the mean at each level of Chol, is in red, the actual observation values are in blue, and the 'residual' or the error of prediction is shown as a green vertical line. Some errors are positive, some are negative.
+
+```{r}
+fit %>% augment %>% 
+  ggplot() +
+  geom_point(aes(x=Chol, y=RestBP)) +
+  geom_segment(aes(x=Chol, xend=Chol, 
+                   y=.fitted, yend=.fitted+.resid),
+               color="green", alpha=0.4, 
+               arrow=arrow(ends="last", type="open",
+                           angle=15, length=unit(.25, "cm") ) ) +
+  geom_abline(aes(slope=(fit %>% tidy)$estimate[2],
+                  intercept=(fit %>% tidy)$estimate[1]),
+              color="red", linetype="dashed", linewidth=1.5)+
+
+  labs(title="Residuals of Regression of RestBP on Chol",
+       x="Cholesterol level (mg/dL)", y="Residuals") +
+  theme_bw()
+```
+
+Another useful plot is a YVP plot. You can do it this way.
+```{r}
+fit %>% gg_residual_plots(items=8)
+```
+This plot shows how really bad the regression model is. The dots would be on the red line if the model predicted the actual value perfectly.  Obviously it did not do well.
+
+# Conclusion
+
+We learned how to write a notebook to analyze the Heart data, and we demonstrated that this set of observations does not support the idea that high cholesterol predicts high resting blood pressure.
+
+We learned to use the `lm()` function for linear regression, and `ggplot()` to visualize the data and some residual plots to see quality of the results of regression.
+
+That's all we will do today. A further analysis using logistic regression, which we will study, is in [Deshmukh, 2020](#r2).
+
+# References
+::: {#r1}
+1. UCI (2013) [UCI Heart Data](http://archive.ics.uci.edu/ml/datasets/heart+disease)
+Heart data was found in the original book and was mentioned in the text on page 312. It is available from the link. some of the field names are changed.
+
+::: {#r2}
+2. Deshmukh, H. (2020) Heart Disease UCI-Diagnosis & Prediction. [Towards Data Science](https://towardsdatascience.com/heart-disease-uci-diagnosis-prediction-b1943ee835a7), June 18, 2020. Retrieved 9/15/2023.
+
+# Appendix
+
+## `gt` for tables
+
+Use `gt()` to show data. The `opt_interactive()` allows paging and horizontal scrolling.
+
+```{r}
+Heart %>% gt %>% opt_interactive
+```
+
+Display regression output using some `gt` features, with a `mbadtools` function.
+```{r}
+fit %>% tidy(conf.int=TRUE) %>% 
+  gt_add_significance() %>% 
+  opt_interactive()
+fit %>% glance %>% 
+  gt_add_significance() %>% 
+  opt_interactive()
+```
+

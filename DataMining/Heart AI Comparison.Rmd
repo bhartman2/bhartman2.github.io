@@ -1,0 +1,499 @@
+---
+title: Heart AI Comparison
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-08 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We discuss the `Heart` dataset, comparing a linear model and some other AI methods.
+---
+
+# Introduction {-}
+We will look at linear regression and compare some other AI methods to analyze the Heart data.
+
+# Packages {-}
+
+Loading the standard packages for this course:
+```{r}
+library(ISLR2) # package contains the data files
+library(mbadtools, quietly=TRUE) # used for MBAD courses
+```
+
+# Data {-}
+
+We will load the Heart data from a csv file in the data folder.  We will use the Import Dataset button in the upper right panel. We will be sure to copy the code generated and place it in the notebook, so the notebook can run on its own.
+
+```{r message=FALSE}
+library(readr)
+Heart <- read_csv("~/stfrancis/MBAD640 Data Mining/Course Files MBAD 640/Data Sets/Heart.csv")
+Heart
+```
+
+You can see that the first column has a funny name.  It seems to just count the observations, all 303 of  them.  Let's change the name of the first column to `Obs` for observation.
+```{r}
+names(Heart)[1]="Obs"
+Heart %>% glimpse
+```
+
+# Data Description {-}
+It is always a good idea to run a `skim` of the data.
+```{r}
+Heart %>% skim
+```
+
+# Data Wrangling {-}
+
+There are some missing data in `Thal` and `Ca`. There are several character variables that should be turned into factors, and some 0-1 variables that should also be factors. 
+
+We will remove the records with missing data and convert the appropriate variables to factors.
+
+```{r}
+Heart = Heart %>% na.omit
+Heart = Heart %>% mutate(Thal = factor(Thal), AHD=factor(AHD), ChestPain = factor(ChestPain),
+                 Sex = factor(Sex), Fbs=factor(Fbs), ExAng=factor(ExAng),
+                 RestECG = factor(RestECG), Slope=factor(Slope), Ca=factor(Ca)
+)
+Heart %>% skim
+```
+
+# Research Problem {-}
+The research problem is to compare predictions of `RestBP` from the other variables, using linear regression and other AI methods. 
+
+We will compare accuracy of the methods using root-mean squared error or RMSE, which can be computed from the predictions (using `augment`) and the actual values of `RestBP` in the dataset. Note that we cannot compare AI methods directly with linear regression using `anova`, since the methods use totally different techniques.
+
+# Data Visualization
+We plot `RestBP` with some other variables.
+```{r}
+Heart %>% select(where(is.numeric) & !contains("Obs")) %>% 
+  ggpairs(progress=F)
+```
+
+We see some dependency of `RestBP` (second row and column) on the others, but it's hard to find a pattern.
+
+Next we try the non-numeric factor variables. No correlation coefficients can be computed.
+
+```{r fig.height=12, fig.width=12}
+Heart %>% select(where(is.factor) & !contains("Obs")) %>% 
+  ggpairs(progress=F)
+```
+
+Not pretty, but shows relative proportions of each variable with the others. Hard to read.
+
+# Wrangling for Analysis {-}
+
+For our analysis we need all the data to be numeric.  We will convert all the factor variables to numeric.  Columns with several values will be converted to several consecutive integer values; binary factors will be converted to 1-2.
+
+```{r}
+Heartall = Heart %>% 
+  select(!contains("Obs")) %>% 
+  sapply(FUN= as.numeric) %>% data.frame
+Heartall
+```
+
+All columns are now numeric.
+
+We will save this numeric data for use elsewhere. You can load this object `Heartall` using `readRDS()`.
+
+```{r}
+saveRDS(Heartall, file="Heartall.rds")
+```
+
+# One-Hot Encoding {-}
+For machine learning applications it is helpful to make factor drivers into multiple dummy variables. This process is called one-hot encoding.  If a factor has $n$ levels, there will be $n$ dummy variables created, one for each level of the factor. The dataset can then be treated as all numeric.  The disadvantage is there are many more drivers, but faster computers and better algorithms handle that nicely.
+
+It's not needed for some models, but others require it.
+
+# Analysis {-}
+We will try the following models.
+
+- Linear regression with `lm`
+- Random forest with `randomForest`
+- Random forest with `randomForest` and one-hot encoded data 
+- Neural network with `neuralnet` and one-hot encoded data 
+- K-nearest-neighbors with `FNN` and one-hot encoded data 
+
+## Linear Regression {-}
+
+As a measure of accuracy we are going to use RMSE. The `yardstick`
+ package has functions for computing most of the common measures. 
+
+```{r}
+fit.lm.all = lm(RestBP~., data=Heartall)
+fit.lm.all %>% glance %>% gt_add_significance()
+fit.lm.all %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+fit.lm.all %>% gg_residual_plots()
+```
+
+The QQ plot looks pretty good [Reference 1](#r1). There is an upward trend in the LS plot of residuals. Many drivers do not have significant coefficients. Adjusted R-squared is only 13.6%. 
+
+Compute the rmse.
+```{r}
+rmse.lm.all = fit.lm.all %>% augment %>%
+  rmse(truth = RestBP, estimate = .fitted) %>% pull(.estimate)
+rmse.lm.all
+```
+
+### Visualization
+
+We make a plot of the corresponding fitted `RestBP` predictions against the actual `RestBP` numbers. We put in a line which denotes an exact match. This is called a y-vs-predicted (YVP) plot.
+
+```{r}
+plot.lm.all = fit.lm.all %>% 
+  gg_residual_plots(items=8) +
+  annotate("text", x= 180, y=120,
+           label=paste0("rmse = ", rmse.lm.all %>% round(digits=3)))+
+  labs(subtitle="Linear Model")
+plot.lm.all
+```
+
+The linear regression does not fit the data well, as we can see from the plot.
+
+## Random Forest
+
+We will use a random forest AI method to model the hypothesis. It uses a random selection of 500 repetitions of many decision trees to create the best predictions.  It might not do as well next time, but might also do better. How do you explain that to the client? We perform the random forest model on all variables, making them numeric. Run the model.
+
+```{r}
+library(randomForest)
+fit.rf.all = randomForest(RestBP~., data=Heartall, type="regression")
+fit.rf.all %>% print
+pred.rf.all = predict(fit.rf.all, newdata=Heartall)
+cat("\nSummary of predictions:\n")
+pred.rf.all %>% summary
+```
+
+Compute accuracy.
+
+```{r}
+rmse.rf.all = rmse_vec(estimate=pred.rf.all, truth=Heartall$RestBP)
+rmse.rf.all
+```
+
+The RMSE is 8.24. This is much improved.
+
+### Visualization
+A YVP plot.
+```{r}
+plot.rf.all = ggplot(Heartall) +
+  geom_point(aes(RestBP, pred.rf.all))+
+  geom_abline(aes(slope=1, intercept=0), color="red", linetype="dashed", linewidth=1) +
+  theme_bw() +
+  annotate("text", x= 180, y=120,
+         label=paste0("rmse = ", rmse.rf.all %>% round(digits=3)))+
+  labs(title="RestBP vs Fitted Values",
+       subtitle="Random Forest, all drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+plot.rf.all
+```
+
+The random forest seems biased to forecast low values too high and high values too low. A good fit should be right on the dotted line. It's much more focused than the neural network.
+
+# Factor Variables
+Neural Networks and KNN require numeric inputs, not factors with multiple values such as `ChestPain`. If we temporarily force our factors into integers to run these models, this introduces a false mathematical hierarchy (e.g., assuming ChestPain 4 is twice as severe as ChestPain 2). We will explore a better way to handle this now with one-hot encoding.
+
+# One-Hot Encoding
+One-hot encoding turns the factors into a series of dummy 0-1 variables, which are numeric. We will apply it to the Heart dataset. See [One hot encoding](#r4) for details.
+
+```{r}
+library(data.table)
+library(mltools)
+
+df = one_hot(as.data.table(Heart))
+df %>% glimpse
+```
+
+We can now use `df` as the data frame for the models that need all numeric variables, and we will compare with a one-hot version of random forest. These are Neural Network and K-Nearest Neighbors.
+
+## Random Forest
+For comparison we rerun Random Forest with the one-hot encoding dataset `df`. No scaling is needed for this model.
+```{r}
+fit.rf.oh = randomForest(RestBP~., data=df, type="regression")
+fit.rf.oh %>% print
+pred.rf.oh = predict(fit.rf.oh, newdata=df)
+pred.rf.oh %>% summary
+```
+
+Compute RMSE.
+
+```{r}
+rmse.rf.oh = rmse_vec(pred.rf.oh, df$RestBP)
+rmse.rf.oh
+```
+
+One-hot encoding did better! That's because the one-hot encoding allowed the discrete variables to be included.
+
+```{r}
+plot.rf.oh = ggplot(df) +
+  geom_point(aes(RestBP, pred.rf.oh))+
+  geom_abline(aes(slope=1, intercept=0), 
+              color="red", linetype="dashed", linewidth=1) +
+  theme_bw() + 
+  annotate("text", x= 180, y=120,
+         label=paste0("rmse = ", rmse.rf.oh %>% round(digits=3)))+
+  labs(title="RestBP vs Fitted Values",
+       subtitle="Random Forest, one-hot drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+  
+plot.rf.oh
+```
+
+There's still a bias, but this is a better fit according to the RMSE.
+
+# Neural Network {-}
+The `neuralnet` package provides a good way to run a general neural network ([neuralnet](#r3)).
+
+For a neural network it is important to scale the variables, like to a 0-1 range. That is so the size of a variable does not influence its importance in the neural network model.
+
+We do this by taking each value and subtracting from it the minimum of the column, then dividing by max - min of the column.  Our scaling function maps each variable to the unit interval $[0,1]$, with the minimum value mapped to 0 and the maximum value to 1.  
+
+There are many ways to scale variables. When we get predictions, we will have to unscale them to compare them to the linear model.
+
+```{r}
+df.scaled = df %>% sapply(FUN = function (x) {
+  (x-min(x))/(max(x)-min(x))})  %>% data.frame
+df.scaled %>% skim
+```
+
+Run 3 repetitions of the same neural net. Plot the best neural network.
+
+```{r fig.height=8, fig.width=10}
+library(neuralnet)
+fit.nn.all= neuralnet(RestBP~., data=df.scaled, linear.output=F,
+                      hidden=c(5,3), rep=3)
+fit.nn.all %>% plot(rep='best')
+```
+
+It's a busy plot on the left because there are so many drivers. Make predictions and unscale them. 
+
+There's no augment function for a neuralnet object so we've written one.
+```{r}
+source("augment_neuralnet.R")
+```
+
+
+```{r}
+pred.nn.all = fit.nn.all %>% 
+  augment_neuralnet(data=Heartall.scaled) %>% 
+  pull(.fitted)
+
+df$RestBP %>% summary
+  
+pred.nn.all.unscaled = min(df$RestBP)+ (max(df$RestBP)-min(df$RestBP))*pred.nn.all
+pred.nn.all.unscaled %>% summary
+```
+
+Compute RMSE now.
+```{r}
+aug.nn.all = fit.nn.all %>% 
+  augment_neuralnet(df.scaled) %>%
+  mutate(UPred = pred.nn.all.unscaled,
+         URestBP = df$RestBP)
+aug.nn.all
+
+aug2.nn.all = aug.nn.all %>% select(URestBP, UPred)
+aug2.nn.all
+rmse.nn.all = aug2.nn.all %>% 
+  yardstick::rmse(truth = URestBP, estimate = UPred) %>% 
+  pull(.estimate)
+
+rmse.nn.all
+```
+
+All the drivers give an RMSE of 9.99.
+
+### Visualization
+
+A YVP plot of results with all drivers including discrete ones.
+
+```{r}
+plot.nn.all = ggplot(df) +
+  geom_point(aes(RestBP, pred.nn.all.unscaled))+
+  geom_abline(aes(slope=1, intercept=0), 
+              color="red", linetype="dashed", linewidth=1) +
+  theme_bw() + 
+  annotate("text", x= 180, y=120,
+           label=paste0("rmse = ", rmse.nn.all %>% round(digits=3))) +
+  labs(title="RestBP vs Fitted Values",
+       subtitle="Neural Network, one-hot drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+plot.nn.all
+```
+
+### Generalized weights
+
+We often use a generalized weights plot to see how the repetitions of the neural network are predicting. We will plot weights for the best repetition. 
+
+Here's how the generalized weights plot is created. First we plot a `ggplot` version.
+
+```{r}
+# find best fit
+best=which.min(fit.nn.all$result.matrix[1,])
+# handmade generalized weights plot
+gw2 = fit.nn.all$generalized.weights[[best]][,2] # Chol is the second variable
+ggplot()+
+  geom_point(aes(x=df.scaled$Chol,y=gw2)) +
+  coord_cartesian(ylim=c(-5,6)) + #chosen to match the next plot]
+  labs(title="Response: RestBP")+
+  theme_bw()
+
+# built-in generalized weights plot from `neuralnet`
+gwplot(fit.nn.all, selected.covariate="Chol", rep='best')
+```
+
+Generalized weights cannot be compared with the coefficients of a linear model.
+
+### Predictions with Repetitions
+There are 3 repetitions of the neurl network model. Each can make a separate prediction. We do them all at once.
+
+```{r message=FALSE}
+# create all predictions
+z = prediction(fit.nn.all)
+```
+
+Put them in a data frame, and compute errors, changing data column name to Actual.
+```{r}
+q = z %>% data.frame %>% 
+  select(rep1.RestBP, rep2.RestBP, rep3.RestBP, data.RestBP) %>% 
+  rename(Actual=data.RestBP) %>% 
+  # compute the residuals for the three repetitions
+  mutate(e1=rep1.RestBP-Actual,
+         e2=rep2.RestBP-Actual,
+         e3=rep3.RestBP-Actual) 
+```
+
+Make boxplot.
+```{r}
+q %>% boxplot()
+```
+Histograms of errors show the distributions, with a normal distribution overlaid.
+```{r message=FALSE}
+gh1 = ggplot(q, aes(x=e1))+
+  geom_histogram(aes(y=after_stat(density)),
+                 color="black", alpha=.3, fill="red") +
+  stat_function(fun = dnorm, 
+                args = list(mean=mean(q$e1), sd=sd(q$e1)))
+
+gh2 = ggplot(q, aes(x=e2))+
+  geom_histogram(aes(y=after_stat(density)),
+                 color="black", alpha=.3, fill="blue") +
+   stat_function(fun = dnorm, 
+                 args = list(mean=mean(q$e2), sd=sd(q$e2)))
+
+gh3 = ggplot(q, aes(x=e3))+
+  geom_histogram(aes(y=after_stat(density)), 
+                 color="black", alpha=.3, fill="tan")+
+  stat_function(fun = dnorm, 
+                args = list(mean=mean(q$e3), sd=sd(q$e3)))
+
+# put the three histograms together
+gh1 | gh2 | gh3
+```
+
+The errors look essentially normally distributed. Remember when explaining that the results will be different each time you run it, because the starting weights are seeded randomly. Good luck convincing your boss.
+
+## K-nearest neighbors
+This model can also be used; it requires all numeric variables as well. The best version comes from package `FNN` ([`FNN` package](#r2)). 
+We try it using 3 nearest neighbors, setting the value of parameter 'k'. We scale the data, because KNN computes 'distances' between observations, and one large column could skew the computation of distance to weight it more. Now we try the scaled one-hot encoded dataset.
+
+```{r}
+library(FNN)
+fit.knn.all<- knn.reg(df.scaled %>% select(-RestBP),
+                      y= df.scaled$RestBP, k=3)
+fit.knn.all$pred %>% summary()
+
+pred.kk.all.unscaled = min(df$RestBP)+ (max(df$RestBP)-min(df$RestBP))*fit.knn.all$pred
+pred.kk.all.unscaled %>% summary
+```
+
+Now compute the RMSE accuracy measure. 
+
+```{r}
+rmse.kk.all = rmse_vec(pred.kk.all.unscaled, Heartall$RestBP)
+rmse.kk.all
+```
+
+Not good.
+### Visualization
+
+```{r}
+plot.kk.all = ggplot(df) +
+  geom_point(aes(RestBP, pred.kk.all.unscaled))+
+  geom_abline(aes(slope=1, intercept=0), 
+              color="red", linetype="dashed", linewidth=1) +
+  theme_bw() + 
+  annotate("text", x=180, y=120,
+           label = paste0("rmse = ", round(rmse.kk.all, digits=3) ))+
+  labs(title="RestBP vs Fitted Values",
+       subtitle="3-Nearest Neighbors Regression, one-hot drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+plot.kk.all
+```
+
+Not so good either.
+
+# Comparing Models
+First compare RMSEs.
+```{r}
+RMSEComparisonAll = data.frame(LM = rmse.lm.all,
+                                RF = rmse.rf.all,
+                                RF_OH = rmse.rf.oh,
+                                NN_OH = rmse.nn.all,
+                                KN_OH = rmse.kk.all) %>% 
+  round(digits=4) %>% 
+  mutate(Measure = "RMSE", .before=1)
+
+RMSEComparisonAll
+```
+The neural net (NN) does fairly well; LM regression is much worse, as is KNN (KN_OH). But the random forest with one-hot encoding (RF_OH) is best, closely followed by the unencoded random forest (RF)
+
+# Visualizations
+Now for all models we repeat the YVP graphs.
+
+```{r fig.height=10, fig.width=12}
+list(
+  plot.lm.all,
+  plot.rf.all + ggtitle(""),
+  plot.rf.oh + ggtitle(""),
+  plot.nn.all + ggtitle(""), 
+  plot.kk.all + ggtitle("")
+  ) %>% wrap_plots(ncol=2)
+```
+
+# Conclusion {-}
+
+We used the Heart data to fit models using linear regression and some AI methods--- a neural network and a random forest and k-nearest neighbors regression.  
+
+With this data, the random forest with one-hot encoding of factors gave the best fit, using RMSE as a metric. However we can see the bias in the results, predicting too high for low actual `RestBP` and too low for high `RestBP`. So the random forest might not be so useful.
+
+The neural network had a lot of errors when it predicted around 130, though it was better above and below. We might want to explore a different hidden layer structure.
+
+We also saw that the random forest method seemed to have a bias. The linear model, by design, did not; the mistakes it made were equally on each side, above or below.  Neither did the neural network.  Can we find a way to take the bias out of the random forest, to take advantage of its closer predictions?
+
+Ideally we should do this experiment using cross-validation, by dividing the dataset into two parts, training on the first part, and testing (predicting) on the second part. More about that later in the class. 
+
+We need to do that because the AI methods use randomness in their processes, and you don't get the same result each time. Also we want the model to be *robust*, be able to make predictions on data it has not been trained on.  Cross-validation is perfect for that.
+
+A `parsnip` workflow set could let us do the necessary tuning of the AI models and also the validation testing, in an easier workflow. 
+
+# References {-}
+::: {#r1}
+1. Create a Q-Q Plot. (https://www.statology.org/ggplot-q-q-plot/)
+
+::: {#r2}
+2. `FNN` package documentation. (https://www.rdocumentation.org/packages/FNN/versions/1.1.4.1)
+
+::: {#r3}
+3. `neuralnet` package documentation. (https://www.rdocumentation.org/packages/neuralnet/versions/1.44.2)
+
+::: {#r4}
+3. One hot encoding. `mltools` package documentation for `one_hot()`. (https://www.rdocumentation.org/packages/mltools/versions/0.3.5/topics/one_hot)
+
+:::
+
+

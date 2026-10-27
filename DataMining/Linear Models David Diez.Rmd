@@ -1,0 +1,188 @@
+---
+title: "Linear Models"
+author:
+  name: David Diez, UCLA; Bruce Hartman, University of St. Francis
+date: "2026-08-03"
+output:
+  html_document:
+    toc: true
+    df_print: paged
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  This writeup of simple linear models in R by David Diez was adapted by Bruce Hartman to supply tidyverse equivalents of the older R code used in [the original article](#r1).
+---
+
+# 5 Linear Models
+
+This will only cover linear models for the purposes of Stat M12.
+
+- basic linear models
+- fitting a model in R
+- finding predictors and residuals
+- regression diagnostics
+- confidence intervals
+
+# Packages
+
+We need the following packages for our analysis. Make sure the packages
+are accessible to our notebook.
+
+```{r message=FALSE}
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+library(mbadtools) # load mbadtools
+```
+
+# Basic linear models
+If there is a variable $x$ that is believed to hold a linear relationship with another variable $y$, then a linear model may be useful. The model will take the form
+
+$$y_i = ax_i + b + e_i$$
+It is easier to think of the model without the $e_i$, which is just the residual of data point $i$ (some may call this the 'error'). So, the goal is the find the best fitting line to the data.
+
+As discussed in lab, this best linear model (by many standards) and the most commonly used method is called the 'least squares regression line' and it has some special properties:
+
+- it minimizes the sum of the squared residuals,
+- the sum of the residuals is zero, and
+- the point (mean($x$), mean($y$)) falls on the line.
+
+# Fitting a model in R
+Given a vector $x$ that may be an explanatory variable of $y$ (through a linear relationship), a model may be fit in R using the function `lm()`:
+```{r}
+# the values of x
+x =c(1,2,3,4,5,6,7,8,9, 10, 11, 22, 13, 14, 15, 16, 17, 18, 19, 20, 21, 12, 23,
+24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+47, 48, 49, 50)
+# the values of y
+y = c(17.904874,  16.869444,   8.577667,  11.514831,  37.501027,  36.153710,
+      31.095892,  -3.168944,  21.165378,  43.404508,  24.303967,  43.302560,
+      46.234474,  59.766088,  27.568532,  23.638366,  53.436572,  65.486651,
+      90.248055,  48.700811,  43.273224,  38.537765,  64.810771,  45.214556,
+      36.170230,  96.215944,  50.387662,  54.798343, 134.467379,  75.629519,
+      33.460263,  56.375976,  57.751208,  52.897848,  77.047355,  62.359089,
+      38.304368,  57.394667,  82.131770,  62.388716,  92.809843, 108.512499,
+      84.240950,  82.989272, 100.224232,  82.375033, 121.487718,  97.679322,
+      90.685929, 111.203797)
+
+# scatter plot of data.
+df=data.frame(x,y)
+ggplot(df) + geom_point(aes(x,y))
+
+#fit a linear model
+fit=lm(y~x) # y 'as a linear function of' x
+```
+
+Add the regression line to the plot:
+```{r}
+# add the least squares line onto the scatter plot
+ggplot(df) + geom_point(aes(x,y)) +
+  geom_abline(aes(intercept=coef(fit)[1], slope=coef(fit)[2]), color="red")
+
+```
+
+The output is saved in `fit` and may be viewed by typing in `fit` and hitting enter or by looking at `summary(fit)`, but a more modern way is to use `glance` and `tidy`. 
+
+```{r}
+fit
+fit %>% summary
+``` 
+The number corresponding to the y-intercept is the number labeled below (Intercept). The second value that falls below x corresponds to the coefficient of x (the slope in the equation). To put this into the form of an equation, use the form 'y=mx+b':
+     $$y = 1.59*x + 15.610$$
+
+Notice that the two values from the output of fit fall under the column Estimate. The r2 of the fit is found by looking at Multiple R-Squared (in this case, it is 0.6024). For Stat M12, we will not need the rest of the information in the summary.
+
+The modern way is
+```{r}
+fit %>% glance
+fit %>% tidy(conf.int=TRUE)
+```
+It makes nice tables in which the numbers can be directly accessed. We can add the confidence intervals easily to the `tidy`.
+
+# Finding predictors and residuals
+Continuing on with the example above, it's time to put the model fit to use. Given the model, if we want to look at what the predicted value of one of our x's would be, say at 12, what do we do? To find this, we just use our least squares fit and plug 12 into the equation:
+     $$y_{predicted} = 1.659*12 + 15.610 = 35.518$$
+So when x=12, we expect y to be about 35.518. This could be computed in R rather than using a calculator. The way I constructed $x$ in R, the position in $x$ corresponding to the value 12 is the 22nd position, so I could do the following in R:
+```{r}
+1.659*x[22] + 15.610
+```
+
+To check my answer in R, I could also use `fit`, which stores extra information including predicted values:
+```{r}
+fit$fitted[22]
+```
+
+We can also use the following tidy routine.
+```{r}
+fit %>% augment %>% select(.fitted) %>% slice(22)
+```
+
+The reason why the answers are slightly different is due to round off error in the intercept and slope of the values in the R output (R rounded to 4 decimal places in the output of `fit` and `summary(fit)`). The output from `fit$fitted[12]` or `augment` is more precise.
+
+If we are interested in the predicted value, odds are we also have interest in the residual at the given point. To compute the residual of a point, we use
+     $$residual = observed - predicted$$
+So, in the case for when x=12 with a predicted value of 35.52 (and an observed value of 38.54, which is shown by the red dot in the plot), the residual would be
+      $$38.54 - 35.52 = 3.02$$
+As with the predicted, R will save the residuals in fit, and the residuals may be extracted using `augment` or the old way.
+
+```{r}
+fit %>% augment %>% select(.resid) %>% slice(22)
+fit$resid[22]
+```
+
+As before, the manually computed and R-output may differ slightly, which is again due to round-off error in the values of the model fit.
+
+One last remark. If a residual is positive, then we know the observed value was larger than the predicted. If a residual is negative, then we know the observed value was smaller than the predicted. This follows directly from the equation
+    $$ residual = observed - predicted$$
+
+> Stat M12 students [ed. MBAD students]: be certain to understand how to do the manual computations of the predicted value and residuals from the output of `fit` and `summary(fit)`. Use `fit$fitted` and `fit$resid` only as a method to check your answers.
+
+[Ed: We use R to do the computations. Once we understand how they are done, we may as well use the software.]
+
+# Regression diagnostics
+[Ed. We don't do this anymore. The `ggResidpanel` package which we install at the start gives the diagnostic plots.]
+
+```{r}
+fit %>% gg_residual_plots()
+```
+
+The three plots above are the first three diagnostic plots available in R by plotting fit; the histogram is useful to check normality of residuals.
+
+The first plot gives an idea of whether there is any curvature in the data. If the red line is strongly curved, a quadratic or other model may be better. In this case, the curvature is not strong (so a quadratic component in the model is not necessary). The second plot is to check whether the residuals are normally distributed. It's real important for us.
+
+The third plot is used to check if the variance is constant (ie, if the standard deviation among the residuals appears to be about constant). If the red line is strongly tilted up/down, that is a red flag. There are no issues with that in this example - the variance appears constant. (The red line will always move up/down a little because of inherent randomness.) 
+
+The histogram gives another check on whether the residuals are normally distributed. These four plots help us understand to what degree the four assumptions of regression are satisfied:
+
+- residuals are normally distributed;
+- residuals have mean 0;
+- residuals are randomly distributed for any fitted value or regression term;
+- residuals have constant standard deviation with fitted values or any regression term.
+
+# Confidence intervals
+We already saw confidence intervals when we ran the `tidy` to see the coefficients.
+```{r}
+fit %>% tidy(conf.int=TRUE)
+```
+>Given a linear model, a confidence interval may be easily obtained by using the function `confint()`:
+
+```{r}
+fit %>% tidy(conf.int=TRUE)
+confint(fit)
+```
+
+To change the level of confidence, add in the level argument:
+
+```{r}
+fit %>% tidy(conf.int=TRUE, conf.level=.9)
+confint(fit, level=0.9)
+```
+
+# Conclusion
+The nice writeup by Diez about basic regression covers what you need to know. BH added some more modern ways of getting the results with R. There's even a discussion of residual diagnosis, a very important part of modeling with a linear model.
+
+# References
+:::{#r1}
+1. Diez, David (n.d.) Linear Models. [https://www.ddiez.com/teac/r/linear_models.php](https://www.ddiez.com/teac/r/linear_models.php)

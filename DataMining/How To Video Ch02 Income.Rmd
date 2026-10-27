@@ -1,0 +1,104 @@
+---
+title: "How To Video Ch02 Income"
+author:
+  name: "Bruce Hartman"
+  affiliation: "University of St. Francis"
+date: "`r lubridate::today()`"
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_float: TRUE
+    theme: united
+abstract: |
+  This notebook is for a How-to Video. 
+---
+
+# Introduction {-}
+We will study the Income data from Chapter 2 of [(ISLR, 2013)](#r2).
+
+# Packages {-}
+Packages are ways R uses to let users write their own commands.  They allow R to be open source and gain user involvement with the latest features.
+
+The `devtools` package will be installed, if you have not already done so, and loaded. Then we install and load package `mbadtools` from GitHub. This package is used in USF's MBAD courses and is not on CRAN. The `mbad_standard_packages` object contains a list of required packages for this course that you will need to install first.   
+```{r}
+# allow package installation from github
+if(!("devtools" %in% installed.packages())) install.packages("devtools")
+library(devtools) # Make sure that the devtools library is loaded
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages())) devtools::install_github("bhartman2/mbadtools")
+# load github packages
+library(mbadtools)
+# list of packages to install
+data("mbad_standard_packages")
+mbad_standard_packages
+# load packages to the notebook
+lib_packages(mbad_standard_packages, quiet=TRUE)
+```
+
+# Data {-}
+Here we get the data using Import Dataset from a csv file Import2.csv.
+```{r}
+library(readr)
+Income <- read_csv("Income2.csv")
+```
+
+Display the data to see I got it.
+```{r}
+Income
+```
+
+# Data Description {-}
+Describe the data using simple display, or `skim`.
+```{r}
+Income %>% skim()
+```
+
+
+# Research Problem {-}
+We will try to  find out if there is a relationship between `Income` and `Education` level and `Seniority`. 
+
+# Data Wrangling {-}
+Make changes to the data for analysis.
+```{r}
+Income = Income %>% rename(ID = `...1`)
+Income %>% glimpse
+```
+
+# Data Visualization
+Graphic displays of data such as pairs plot.
+```{r}
+Income %>% select(-ID) %>% 
+  ggpairs(progress=F) +
+  theme_bw() +
+  labs(title="Pairs Plot of Income Data")
+```
+
+
+# Linear Regression {-}
+We run a regression of `Income` on `Education` and `Seniority`.
+```{r}
+model1 <- lm(Income ~ Education + Seniority, data=Income)
+```
+
+See the results:
+```{r}
+summary(model1)
+```
+
+Use modern way.
+```{r}
+model1 %>% glance
+model1 %>% tidy
+```
+
+# Conclusion {-}
+My conclusions are that `Income` does depend on `Education` and `Seniority` taken together. The linear regression has significant coefficients.
+
+# References {-}
+::: {#r1}
+1. Hartman, B. (2024) Basic Notebook Template. (https://github.com/bhartman2/mbadtools/blob/main/notebook/Basic%20Notebook%20Template.Rmd)
+:::
+
+::: {#r2}
+2. ISLR (2013) An Introduction to Statistical Learning with Applications in R. (https://www.statlearning.com/)
+:::

@@ -1,0 +1,197 @@
+---
+title: Interpreting Models with RuleFit
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-06  Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present the RuleFit surrogate model method for interpretability, using the `pre` package.
+---
+
+# Introduction
+RuleFit is an interpretation method that builds a rule-based interpretation of an AI black-box model. It's implemented in the `pre` package. It works by building a rule-based decision tree.  The rules can be used to 'explain' the black-box model. See [Molnar, 2025](#r3).
+
+It's a form of surrogate model, made by adding variables for rules to the original regression.
+
+RuleFit (and `pre`) is essentially a linear model. It generates rules as 0-1 dummy variables based on a decision tree output. Then it adds these dummy variables to the model and runs a lasso regression to weed out the unimportant ones. Remember that lasso regression eliminates variables that don't contribute much to the objective. 
+
+The lasso regression is repeated on each decision tree found, using crossvalidation. We end up with a selection of rules and coefficients for them produced by the lasso regressions. Importances for the rule, since they are just variables now, can also be calculated. For linear regression importances are related to the t-values of the coefficients.
+
+We wind up with coefficients of each rule, that show how much the rule contributes to changing the target variable, and in what direction.  We also get importances of the rules (variables), which allow us to rank the rules according to importance.  The top ranked rules in importance form an 'explanation' of the black-box model.
+
+# Packages
+```{r}
+library(randomForest)
+library(ISLR2)
+library(mbadtools)
+```
+
+# 1. Data
+The Boston dataset is in the `ISLR2` package.
+```{r}
+data(Boston)
+```
+
+# Research Question
+Can we explain or interpret a complex random forest model using the RuleFit method?
+
+# Design
+Split data for training and test.
+```{r}
+# Split data into training and testing sets
+set.seed(42) # for reproducibility
+trainSplit <- initial_split(Boston, prop = 0.8, strata = medv)
+boston_train <- training(trainSplit)
+boston_test <- testing(trainSplit)
+```
+
+# 2. Train random forest model
+The `randomForest` package provides a simple interface. We will use all other variables to predict `medv`.
+```{r}
+rf_model <- randomForest(medv ~ ., 
+                         data = boston_train, 
+                         ntree = 500, importance = TRUE)
+```
+
+Print a summary of the random forest model
+```{r}
+print(rf_model)
+```
+
+# Variable Importance
+`randomforest` computes variable importances internally. View variable importance; we can compute a nice chart using "model" importances with `vip` and a plot routine.
+```{r}
+randomForest::importance(rf_model)
+varImpPlot(rf_model)
+rf_model %>% vi() %>% gg_vip() 
+```
+
+# Interpret using `pre`
+The `pre` package creates a prediction rule ensemble (PRE), which provides interpretable rules. Use the `pre()` function on the same training data to find predictive rules.
+
+The algorithm is largely based on the RuleFit method. See [Molnar, 2025](#r3)
+```{r}
+pre_model <- pre(medv ~ ., data = boston_train, 
+                 family = "gaussian", ntrees = 100)
+```
+
+Print a summary of the prediction rule ensemble model. In tree construction randomness is used.
+```{r}
+print(pre_model) %>% gt()
+```
+Get the most important rules. 
+
+```{r}
+coefs = coef(pre_model)
+coefs %>% 
+  filter(rule !="(Intercept)" & abs(coefficient)>0) %>% 
+  gt()
+```
+
+The `pre` package allows you to extract and inspect the most influential rules. We choose the first 6 in importance. the plot displays the rules as decision trees.
+
+```{r}
+pre::importance(pre_model, plot=F)$baseimps %>% head(6)
+```
+We can plot the individual decision trees we found.
+<a name="Figure1"/>
+```{r fig.height=10, fig.width=12}
+plot(pre_model, linear.terms = FALSE, nterms=6)
+```
+
+The `print(pre_model)` output will also show the important rules and their coefficients.
+```{r}
+print(pre_model)[1:7,]
+```
+
+Retrieve the importances and make a `vip` graph.
+```{r}
+pre::importance(pre_model, plot=F)$baseimps
+pre::importance(pre_model) #graph
+```
+
+# 4. Compare model performance
+Use the trained models to make predictions on the test set.
+```{r}
+rf_predictions <- predict(rf_model, newdata = boston_test)
+pre_predictions <- predict(pre_model, newdata = boston_test)
+```
+
+# Compare Models
+A good interpretation method or surrogate model should not sacrifice too much predictive accuracy. We choose RMSE and R-squared. We evaluate on the test dataset predictions.
+```{r}
+rf_rmse <- yardstick::rmse_vec(boston_test$medv, rf_predictions)
+pre_rmse <- yardstick::rmse_vec(boston_test$medv, pre_predictions)
+
+cat("Random Forest RMSE:", rf_rmse, "\n")
+cat("Rule-based (pre) RMSE:", pre_rmse, "\n")
+
+rf_rsq <- yardstick::rsq_vec(boston_test$medv, rf_predictions)
+pre_rsq <- yardstick::rsq_vec(boston_test$medv, pre_predictions)
+
+cat("\nRandom Forest R-squared:", rf_rsq, "\n")
+cat("Rule-based (pre) R-squared:", pre_rsq, "\n")
+```
+
+The gap here in R-squared is not so big; random forest predicts 88% of variation for the original model, and `pre` predicts 80% of variation from the original predictions.
+
+# 5. Extract/interpret rules
+Extract the 6 most important rules, leaving out the Intercept; these appear in [Figure1](#Figure1).
+```{r}
+pre::importance(pre_model, plot=F)$baseimps %>% head(6)
+```
+
+Extract the rules with the largest coefficients, leaving out the Intercept rule:
+```{r}
+print(pre_model) %>% slice(2:7)
+```
+
+Example interpretation:
+For instance, a rule like `lstat <= 9.54 & rm > 7.42` could have a large coefficient, indicating that properties with a bigger average number of rooms and lower
+percentage of lower status population tend to have higher median values (positive sign).
+
+# Partial Dependence 
+The `pre` package has a `singleplot` function to do this, but I prefer my own ggplot, from `gg_interpret.R`. We prepare the data with `pdp::partial`, adding the type="regression" to avoid warnings.
+```{r}
+wrap_plots(ncol=2, nrow=2,
+  partial(pre_model, pred.var="lstat", train=boston_train,
+             type="regression") %>% 
+    gg_pdp(),
+  partial(pre_model, pred.var="rm", train=boston_train,
+             type="regression") %>% 
+   gg_pdp(),
+  partial(pre_model, pred.var="crim", train=boston_train,
+             type="regression") %>% 
+    gg_pdp(),
+ggally_blank()
+)
+```
+
+# Predictions
+Example predictions for the first 3 test communities.
+```{r}
+pre_predictions = predict(pre_model, newdata=boston_test[1:3,])
+pre_predictions
+```
+
+# References
+:::{#r1}
+Gemini (2025) Model the Boston dataset with random forest and RuleFit using `pre`. Retrieved 10/17/2025 from (https://www.google.com/search?q=Build+a+script+in+R+to+model+the+Boston+dataset+with+a+random+forest+and+a+rule+fit+interpretation+with+the+pre+package&rlz=1C1RXQR_enUS1025US1025&sourceid=chrome&ie=UTF-8&udm=50&aep=48&cud=0&qsubts=1760714759685&mtid=P2DyaIK9HNHAkPIP06afcQ&mstk=AUtExfCVCB1LiAvbRigZDf9Emx1ZELilePM6MKAheVQFdr_4ex5X5B-YwMqVu6qzSbH3ur8tRFFdPsyHo4XCP8JUPEqpkpHwktpNB0oHJ_Hwust5ndEKMWCWwXyzqsqMEzIQpyxvvIUW7BtkF7BenLNsiAUCCLboW2GRZGO9wlzp2muW0HJF7HL4uJQQoe9zWKKodcIzxQNytHrzinBDSmOK-oMQdbjeP2ldGX4lwMLR2PWmh_S-6QGk64Xm5gq8DBSazXHccMj9nw5c3DfqjlpXQaFi5i3tFJqZuhM&csuir=1)
+
+:::{#r2}
+Hartman, Bruce (2025) Modeling Workflow Techniques. (https://chatgpt.com/c/68e41538-5894-8332-aeea-7ab0a0fd7b08)
+
+:::{#r2}
+Molnar, C. (2025) RuleFit. Chapter 11, Interpretable Machine Learning, 3rd edition, continuously updated. Retrieved online on 10/17/2025 from (https://christophm.github.io/interpretable-ml-book/rulefit.html)
+
+:::(#r4)
+Fokkema, M. (2020). Fitting prediction rule ensembles with r package pre. Journal of Statistical Software, 92(12), 1–30. https://doi.org/10.18637/jss.v092.i12
+
+:::{#r5}
+[R. Barton. (2025)](https://doi.org/10.1093/imaman/dpaf036) Response grid plots for model-agnostic machine learning insight. IMA Journal of Management Mathematics (2025) 36, 623–648.  DOI: https://doi.org/10.1093/imaman/dpaf036  The [code is on GitHub](https://github.com/rrbarton51/ResponseGridPlots)

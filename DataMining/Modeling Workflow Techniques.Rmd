@@ -1,0 +1,370 @@
+---
+title: Modeling Workflow Techniques
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-01 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some techniques for modeling workflow, based on `tidymodels`.
+---
+
+# Introduction
+You may have observed that the modeling we have done always goes through a few steps that pretty much stay the same.  After preparing data, choose a crossvalidation strategy (such as split the data into training and test) , we choose a model or models, we choose parameters for the model function, run it (them) on the training data (or some other crossvalidation strategy) to get model objects, make predictions on test data (or another CV method), and assess how well the model(s) did using one or more metrics.  This allows us to compare models.  There may be other steps as well, like perhaps to provide interpretation [(Molnar, ongoing)](#r2).
+
+A sequence of steps like this is called a Workflow. 
+
+R experts have developed some techniques that make some of the workflow steps automatic.  This is useful if you are trying to select a best model for your data.
+
+Here we investigate `tidymodels`, such a workflow package. Learn how to get started at (https://www.tidymodels.org/start/)
+
+A good discussion of explanatory model analysis can be found at [Biecek and Burzykowski (2020)](#r4). They provide an image of the steps in a good model workflow.
+
+![Source: [Biecek and Burzykowski](#r4), fig.2.1](https://ema.drwhy.ai/figure/MDP_washmachine.png)
+
+# Packages
+As usual, we have some standard packages.
+```{r}
+library(ISLR2)
+if(!("mbadtools" %in% installed.packages()))  pak::pak("bhartman2/mbadtools")
+library(mbadtools) # course packages including tidyverse and tidymodels
+```
+
+The `parsnip` workflow package is included in `tidymodels` already. 
+
+# Data
+We'll use the `Boston` dataset from the `ISLR2` package.
+```{r}
+data("Boston")
+Boston
+Boston %>% skim
+```
+
+There's no missing data, all 13 variables are numeric, and `chas` appears to be binary. The target variable will be `medv`, the median value of homes in a community.
+
+# Workflow with `tidymodels` 
+There are 10 steps. Steps 9 and 10 deal with interpretability.
+
+Set a seed for reproducibility.
+```{r}
+set.seed(2026)
+```
+
+# 1. Data
+We looked at the `Boston` dataset before.
+
+# 2. Design - Crossvalidation
+Split the data into training and test datasets. 
+
+Why do we need crosvalidation? We don't want to assess the model on the data it learned on. 
+
+Naturally, a model will do better on the data it was trained on, like if the teacher gives you the questions to prepare for a test. 
+
+We use an 80-20 split performed with the `rsample` package in `tidyverse`.
+```{r}
+set.seed(2026)
+split <- initial_split(Boston, prop = 0.8, strata = medv)  # medv is the outcome
+train_data <- training(split)
+test_data  <- testing(split)
+```
+
+# 3. Recipe
+The recipe creates the formula and the data in a standard manner. It's like defining the formula and data in `lm()`. It also allows some modification such as scaling and removing variables with little variance, that is, that are almost constant and therefore unable to affect anything.
+
+No fancy preprocessing, but center/scale numeric predictors. Most AI models work better with centered/scaled predictors (drivers). Any model we choose predicts `medv` using all other variables, and uses the training data. We'll validate it on the test data later on.
+
+```{r}
+boston_recipe <- recipe(medv ~ ., data = train_data) |> 
+  # remove near-zero variance if any
+  step_nzv(all_predictors()) |> 
+  # center & scale numeric predictors
+  step_normalize(all_numeric_predictors()) 
+```
+
+# 4. Model and Workflow
+You can have more than one model at once! But we won't show that yet. We have to specify a model, put it into a workflow, and then fit it. First a simple model and then a real black-box model.
+
+## A. LM Linear regression model
+```{r}
+# specify the model type and engine
+lm_spec <- linear_reg() %>%
+  set_engine("lm")
+
+# create a workflow
+lm_workflow <- workflow() %>%
+  add_model(lm_spec) %>%
+  add_recipe(boston_recipe)
+
+# Fit linear model on training data
+lm_fit <- lm_workflow %>% fit(data = train_data)
+```
+
+## B. RF Random Forest model 
+The model is set to be tunable, meaning that we can change some of the parameters of the runs. This allows us to hunt for a tuning that performs best by searching outcomes over a range of parameter values. Remember the random forest, like many AI routines, depends on randomization. In each tree construction it randomly samples which predictors to include in the 'mtry' selected for the tree construction. 'min_n' sets the number of data points that must appear in a leaf node to continue construction of a tree.
+
+We choose the engine here also. We have chosen the `ranger` engine. This engine automatically calculates importances of drivers; we specify that importance of drivers is to be calculated using the permutation method, the preferred way to construct them.
+
+```{r}
+# specify the model
+rf_spec <- rand_forest(
+  mode = "regression",
+  # number of predictors sampled at each split
+  mtry = tune(),        
+  min_n = tune(), # minimum data points in a node
+  trees = 1000    # keep high for stability
+) %>% set_engine("ranger", importance = "permutation")
+
+# Create workflow for RF
+rf_workflow <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(boston_recipe)
+```
+
+# 5. Tuning 
+With a random forest model we prefer to do 5-fold CV to choose the best tuning parameters for this training data. Here we create  5 folds on the training data. 
+
+Essentially we randomly divide the `train_data` into 5 parts, called folds.  We will make 5 runs with each set of parameters; in each run we hold out one fold and train on the other 4 combined. Then we evaluate on the hold-out set.  Finally we average the metric we've chosen over the 5 runs.    
+```{r}
+set.seed(2025)
+cv_folds <- vfold_cv(train_data, v = 5, strata = medv)
+```
+
+## Define tuning grid 
+We want to define a grid of tuning parameters with reasonable ranges. What are the parameters for this model?
+```{r}
+rf_params <- rf_workflow %>%
+  extract_parameter_set_dials() %>%
+  finalize(train_data)   # pass your training dataframe here
+print(rf_params)
+```
+There are two, 'mtry' and 'min_n'.
+
+## Create grid
+Here we create the grid of parameters; we choose at random though there are other ways.
+```{r}
+grid_rf <- grid_random(rf_params, size = 20)  # 20 random combos of the parameters.
+```
+
+# 6. Tune
+We use `tune_grid` to run the workflow with each set of parameters in the grid. If it's possible to run these in parallel on your processor, the package supports that. My machine has 2 processors. We choose the metrics for the CV here.
+
+## Run workflow
+The warning messages can be ignored. This may take awhile- there are 1000 runs, each with 5 cv runs, for all 20 grid parameters.
+```{r}
+set.seed(2025)
+doParallel::registerDoParallel()  # optional: parallelize tuning if available
+
+tictoc::tic() # start measuring run time
+rf_tune_res <- tune_grid(
+  rf_workflow,
+  resamples = cv_folds,
+  grid = grid_rf,
+  metrics = metric_set(rmse, rsq), #choose metrics
+  control = control_grid(save_pred = TRUE)
+)
+tictoc::toc() # stop and print runtime
+```
+These warnings don't matter.
+
+We have to compare the different parameter choices. `rsq` and `rmse` metrics are calculated for each try in `rf_tune_res`. Find the best set of tuning parameters, based on `rmse`.
+
+Collect the metrics into a data frame. 
+```{r}
+collect_metrics(rf_tune_res)|> arrange(mean)|> filter(.metric=="rmse")
+```
+
+Find best combination by RMSE. There's a function for that!
+```{r}
+best_rmse <- select_best(rf_tune_res, metric="rmse")
+best_rmse
+```
+How to find the best one in `rf_tune_res` using the `.config` column in `best_rmse`.
+```{r}
+rf_tune_res$.metrics[[1]] |> 
+  filter(.metric=="rmse" & .config == best_rmse$.config)
+```
+
+## Finalize workflow with best params
+We have to update the workflow with the best parameter choices.
+```{r}
+# insert best parameters into spec
+final_rf_spec <- finalize_model(rf_spec, best_rmse)
+# create final workflow
+final_rf_wf <- workflow() %>%
+  add_model(final_rf_spec) %>%
+  add_recipe(boston_recipe)
+```
+
+## Fit final RF to full training data
+```{r}
+set.seed(2025)
+final_rf_fit <- final_rf_wf %>% fit(data = train_data)
+```
+
+# 7. Evaluate models on test set
+We now have two models. We have to see how they perform on the test data.
+
+Often different models have different versions of the `predict` method. Notice how `tidymodels` allows us to do predictions in a common way. 
+
+```{r}
+lm_pred <- predict(lm_fit, test_data) %>%
+  bind_cols(test_data %>% select(medv)) %>%
+  rename(.pred = .pred)
+
+rf_pred <- predict(final_rf_fit, test_data) %>%
+  bind_cols(test_data %>% select(medv)) %>%
+  rename(.pred = .pred)
+```
+
+## Compute metrics
+The `metrics` function is from the `yardstick` package. Remember we selected the metrics to use earlier.
+```{r}
+lm_metrics <- lm_pred %>% metrics(truth = medv, estimate = .pred)
+rf_metrics <- rf_pred %>% metrics(truth = medv, estimate = .pred)
+
+lm_metrics
+rf_metrics
+```
+
+# 8. Compare RMSE and R-squared
+We just put the metrics into a nice display.
+```{r}
+comparison <- bind_rows(
+  lm_metrics %>% mutate(model = "Linear"),
+  rf_metrics %>% mutate(model = "RandomForest")
+) %>% select(model, .metric, .estimate) %>% 
+  pivot_wider(names_from = .metric, values_from = .estimate)
+
+comparison
+```
+Observe that RandomForest is somewhat better (lower) using `rmse` or `mae` (mean absolute error) as a metric, and it is better (bigger) using `rsq` (r-squared) as a metric.
+
+We are actually done as far as the model goes. 
+
+# Discussion
+We used `tidymodels` and `parsnip` which is part of `tidymodels` to model the `Boston` dataset predicting `medv` from the other variables. We tried a linear and a `ranger` randomForest model.
+
+The random forest model came out best on the test data using RMSE as the metric.
+
+The random forest model shows a propensity to 'overfit', as we would expect, since it randomly samples a lot of different trees using different drivers to obtain the predictions. It also 'separates' the most important variables more.
+
+# Multiple Models
+From Gemini:
+
+>Yes, in `tidymodels` (the modern tidyverse modeling framework) you can fit multiple models at once using a **Workflow Set** (`workflowsets`).
+
+>A workflow set lets you combine multiple preprocessing specifications (recipes) with multiple model specifications (e.g., Linear Regression, Random Forest, XGBoost) and train/evaluate all of them across your data or resamples simultaneously.
+
+## Example: Fitting Multiple Models with `workflowsets`
+This example came from Gemini.
+
+### 1. Load Libraries and Setup Data
+```{r}
+library(tidymodels)
+# Split data and create cross-validation folds
+set.seed(123)
+data_split <- initial_split(mtcars, prop = 0.8)
+train_data <- training(data_split)
+folds      <- vfold_cv(train_data, v = 5)
+```
+
+### 2. Define Recipes and Model Specifications
+Define one or more preprocessing recipes and model types:
+
+```{r}
+# Preprocessing recipes
+rec_basic <- recipe(mpg ~ ., data = train_data)
+
+rec_normalized <- recipe(mpg ~ ., data = train_data) %>% 
+  step_normalize(all_numeric_predictors())
+
+# Model specifications
+lm_spec <- linear_reg() %>% 
+  set_engine("lm")
+
+rf_spec <- rand_forest(mode = "regression") %>% 
+  set_engine("ranger")
+```
+
+### 3. Combine in a `workflow_set()`
+
+Pass list vectors of recipes and models into `workflow_set()`:
+
+```{r}
+wf_set <- workflow_set(
+  preproc = list(basic = rec_basic, norm = rec_normalized),
+  models  = list(lm = lm_spec, rf = rf_spec),
+  cross   = TRUE # Cross-combines all recipes with all models (4 workflows total)
+)
+```
+
+### 4. Fit All Workflows to Resamples
+
+Use `workflow_map()` to evaluate all models on your cross-validation folds:
+
+```{r}
+set.seed(123)
+# Fit every workflow in the set across all CV folds
+wf_results <- wf_set %>% 
+  workflow_map("fit_resamples", resamples = folds)
+
+wf_results
+```
+
+### 5. Rank and Compare Model Performance
+
+You can easily collect metrics or autoplot the results across all models:
+
+```{r}
+# Rank models by performance (e.g., RMSE)
+rank_results(wf_results, rank_metric = "rmse", select_best = TRUE)
+
+# Plot performance comparisons visually
+autoplot(wf_results, metric = "rmse")
+
+```
+
+### 6. Extract and Fit the Best Model
+
+Once you pick the winning workflow, extract and finalize it on the whole training set:
+
+```{r}
+# Extract a specific workflow (e.g., "norm_lm")
+best_wf <- extract_workflow(wf_results, id = "norm_rf")
+
+# Fit on training data and test on testing data
+final_fit <- last_fit(best_wf, split = data_split)
+collect_metrics(final_fit)
+```
+
+# Conclusion
+We've presented workflows for modeling, following `tidyverse`. We tried linear and random forest models, found the random forest superior, and shown why with metrics.
+
+We also showed how to combine multiple models and recipes into the same workflow, which makes evaluating several models against the same criteria easy.
+
+From Gemini: 
+Why Use `workflowsets`?
+
+* **No Copy-Pasting:** Eliminates repeating `workflow()` and `fit()` calls for every algorithm.
+* **Organized Resampling:** Automatically tracks metrics across cross-validation folds for every combination.
+* **Hyperparameter Tuning:** You can swap `fit_resamples` in `workflow_map()` with `tune_grid` to tune multiple models at once.
+
+
+# References
+:::{#r1}
+ChatGPT (2025) Model the Boston dataset with parsnip linear model and random forest. Retrieved 10/6/2025 from (https://chatgpt.com/c/68e41538-5894-8332-aeea-7ab0a0fd7b08)
+
+:::{#r2}
+Molnar, C. (2025).  Interpretable Machine Learning:
+A Guide for Making Black Box Models Explainable (3rd ed.).  christophm.github.io/interpretable-ml-book/ Partial Dependence Plots. Chapter 19,
+ Retrieved online on 10/7/2025 from (https://christophm.github.io/interpretable-ml-book/pdp.html)
+ 
+:::{#r4}
+Biecek, P. and Burzykowski, T. (2020) Exploratory Model Analysis. (https://ema.drwhy.ai/)
+
+

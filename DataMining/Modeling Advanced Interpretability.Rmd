@@ -1,0 +1,360 @@
+---
+title: Modeling Advanced Interpretability
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-27 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some techniques for interpretability, using a modeling workflow based on `tidymodels`.
+---
+
+# Introduction
+You may have observed that the modeling we have done always goes through a few steps that pretty much stay the same.  After preparing data, design a crossvalidation strategy (such as split the data into training and test), choose a model or models, choose parameters for the model function, run it (them) on the training data (or some other crossvalidation strategy) to get model objects, make predictions on test data (or another CV method), and assess how well the model(s) did using one or more metrics.  This allows us to compare models.
+
+Once we have picked the best model, we can finalize the model by running it on all the data. 
+
+- We use the `tidymodels` workflow package.
+
+There may be other steps as well, like providing interpretation for complex AI models [(Molnar, ongoing)](#r2).
+
+- We add some interpretability aids. We do a simplified version of variable importance.  
+
+Surrogate models are fit to tell us if they are sufficiently close to the model they are surrogates for.  Here, for instance in [ChatGPT (2025)](#r1) we discovered that a random forest, a model that is not very interpretable, gives a better fit than a linear model.
+
+- We create a surrogate for the random forest that may help us describe to a naive reader what kind of decision the random forest is making.
+
+# Packages
+As usual, we have some standard packages. The `vip` package computes variable importance for many different model types. The `pdp` package helps in partial dependence plot computations. Some helper functions are useful. These are all provided in `mbadtools`.
+
+```{r}
+library(ISLR2)
+library(mbadtools, quietly=TRUE) # some course utilities
+```
+
+# Data
+We'll use the `Boston` dataset from the `ISLR2` package.
+```{r}
+data("Boston")
+Boston
+```
+
+There's no missing data, all 13 are numeric, and `chas` appears to be binary. The target variable will be `medv`, the median value of homes in a community.
+
+# Workflow 
+
+## Design (Crossvalidation)
+Split the data into training and test datasets. We use an 80-20 split. And for parameter choosing we create CV folds. These steps use package `rsample`, which is part of `tidymodels`.
+```{r}
+set.seed(2026)
+# make an 80-20 random split
+split <- initial_split(Boston, prop = 0.8, strata = medv)  # medv is the outcome
+# create training dataframe
+train_data <- training(split)
+# create test dataframe
+test_data  <- testing(split)
+# create 5 folds in training data, for cv folding
+folds <- vfold_cv(train_data, v = 5, strata = medv)
+```
+
+## Recipe
+Model `medv` using all other variables. Most AI models work better with scaled data. We also want to remove any predictors that are essentially zero, since they should not contribute.
+```{r}
+boston_recipe <- recipe(medv ~ ., data = train_data) %>%
+  step_nzv(all_predictors()) %>% # remove near-zero variance if any
+  step_normalize(all_numeric_predictors()) # center/scale numeric predictors
+```
+
+## Random Forest model 
+The random forest, like many AI routines, depends on randomization. In each tree construction it randomly samples which predictors to include out of the maximum number 'mtry' selected for the tree construction. 'min_n' sets the number of data points that must appear in a leaf node to continue construction of a tree. 
+
+Previously, for this dataset, we hunted for a tuning that performs best by searching outcomes over a range of parameter values. We did that over the cv `folds` created above, which we don't need here. We choose the tuning parameters found in [Hartman, 2026](#r3). So we set 'mtry' and 'min_n' to those numbers. 
+
+We choose the engine here also. We have chosen the `ranger` engine, and specified that 'importance' of drivers is to be calculated using the permutation method. We won't tune the `ranger` model.
+
+We throw in a linear model for comparison.
+
+## Model Spec for RF and LM
+```{r}
+best_rf_spec <- rand_forest(
+  mode = "regression",
+  mtry = 5,        # number of predictors sampled at each split
+  min_n = 3,       # minimum data points in a node
+  trees = 1000          # keep high for stability
+) %>% set_engine("ranger", importance = "permutation")
+
+lm_spec <- linear_reg() %>%
+  set_engine("lm")
+```
+
+## Workflow for RF and LM
+```{r}
+best_rf_workflow <- workflow() %>%
+  add_model(best_rf_spec) %>%
+  add_recipe(boston_recipe)
+```
+
+```{r}
+lm_workflow = workflow() %>% 
+  add_model(lm_spec) %>%
+  add_recipe(boston_recipe)
+```
+
+## Fit
+Fit both models on the training data.
+```{r}
+set.seed(2026)
+best_rf_fit <- best_rf_workflow %>% fit(data = train_data)
+lm_fit <- lm_workflow %>% fit(data=train_data)
+```
+
+## Predictions
+Make predictions on the test data. We don't want to measure the model predicting the data it learned on.
+```{r}
+rf_pred <- predict(best_rf_fit, test_data) %>%
+  bind_cols(test_data %>% select(medv)) %>%
+  rename(.pred = .pred)
+lm_pred <- predict(lm_fit, test_data) %>%
+  bind_cols(test_data %>% select(medv)) %>%
+  rename(.pred = .pred)
+```
+
+## Metrics to compare
+Compare the metrics.
+```{r}
+rf_metrics <- rf_pred %>% metrics(truth = medv, estimate = .pred) %>% mutate(model="rf", .before=1)
+lm_metrics <- lm_pred %>% metrics(truth = medv, estimate = .pred) %>% mutate(model="lm", .before=1)
+bind_rows(rf_metrics, lm_metrics) %>% 
+  pivot_wider(names_from = .metric, values_from = .estimate)
+```
+
+Clearly the rf model is better.
+
+## Visualizing fit (YVP)
+```{r}
+ggplot(rf_pred) +
+  geom_point(aes(x=medv, y=.pred, color="RF")) +
+  geom_point(data=lm_pred, 
+             aes(x=medv, y=.pred, 
+             color="LM")) +
+  geom_abline(aes(slope=1, intercept=0), 
+              color="red", linetype="dashed") +
+  scale_color_manual(values=list("darkgreen", "orange"),
+                      name="Model")+
+  theme_bw()
+```
+The linear model (dark green) is clearly worse; and the random forest (orange) is better; both are poorer for large values of `medv`.
+
+# Variable importance
+Random forest is a 'black box' model. It's almost impossible to explain how it works, and it has a random portion, when it chooses which trees to use. It won't give the same answer each time it is run.  To make the results reproducible by readers we set a seed for the random number generator.  However, rerunning in this notebook will give a different result.
+
+For interpretation of 'black box' models like random forest, we need to do something to explain the predictions. Read [(Molnar, n.d.)](#r2) for more on interpretability calculations. 
+
+One such is variable importance. 
+
+- Extract `parsnip` fit object. 
+- Get a data object to plot by using `vip::vi` 
+- Make the plot using a plot function `gg_vip()`. 
+- Add `ggplot` layers like `labs()`.
+
+```{r}
+rf_fit_obj <- extract_fit_parsnip(best_rf_fit)$fit
+vi_rf = vi(rf_fit_obj)
+vi_rf %>% gg_vip() +
+  labs(subtitle="Random forest") +
+  theme(legend.position = "none")
+```
+
+`lstat` and `rm` are the most important variables in the model. 
+
+Be clear that this is a model-level interpretation; it considers all the observations in the test dataset.  If we wanted an interpretation for a single observation we would have to follow a different procedure.
+
+# Partial Dependence Plots
+Partial dependence plots show the marginal effect of a feature (or two) on the predicted outcomes. [(Molnar, n.d.)](#r2) A partial dependence plot can show whether the relationship between the target and a feature is linear, monotonic, or more complex. 
+
+Now we make partial dependence plots on the top two variables. Use `pdp` package (part of `mbadtools`) to construct the data for plotting. Then plot the constructed data frames.  Rug plots, to show the density of the axis variables, are a good idea, according to [(Molnar, Chapter 19)](#r2).
+
+
+```{r}
+# use `pdp::partial()` to get data to plot
+pd_rf1 <- partial(rf_fit_obj, pred.var = "lstat", 
+                   train = bake(prep(boston_recipe), train_data))
+pd_rf2 <- partial(rf_fit_obj, pred.var = "rm", 
+                   train = bake(prep(boston_recipe), train_data))
+```
+
+<a name="Figure1"/>
+Figure 1 contains the partial dependence plots.
+```{r}
+wrap_plots(ncol=2,
+           gg_pdp(pd_rf1),
+           gg_pdp(pd_rf2, color="red")
+)
+```
+
+Neither relation is linear for the random forest model. 
+
+- The `lstat` plot shows a steady decline till a break at an `lstat` of about 1 sd above the mean, when it flattens out.  That value of `lstat` is `r mean(Boston$lstat) + sd(Boston$lstat)`, or around 20%. 
+- `medv` goes up with `rm`, but the random forest captures a distinctly nonlinear trend, where `medv` stays the same until about the mean value of `rm`, and then goes up quickly to a peak. The break point for the steep ascent is near `r mean(Boston$rm)`, the mean number of rooms, about 6.25. 
+- The rug plot on the vertical axis shows where data are concentrated at low and at high values of `medv`, with fewer points in the middle. 
+
+# Surrogate Model
+A surrogate model is a simpler, explainable model whose predictions are very similar  to the random forest black-box model chosen. Popular choices are linear models or decision trees. 
+
+In a surrogate model we use data that includes all the drivers from the black-box model, but replace the response with the predicted values from the model we are explaining. 
+
+We are therefore trying to get close to what the black-box model predicts, not what the original data say are correct. That's what a surrogate model does - models the original model!!!
+
+Here is a decision tree surrogate model.
+
+## Data
+Manufacture a new dataset representing the black-box model by adjoining to the Boston dataset **its predicted values**, and removing the original `medv` target variable.
+
+```{r}
+# make the original data with predictions added
+train_data_p = augment(best_rf_fit, new_data=train_data)
+# remove the original target and name the new predicted values 
+train_data_p = train_data_p %>% 
+  select(-medv) %>% 
+  rename(medvp=.pred)
+train_data_p
+```
+
+## Recipe
+```{r}
+surrogate_recipe <- recipe(medvp ~ ., data = train_data_p) %>%
+  step_nzv(all_predictors()) %>% # remove near-zero variance if any
+  step_normalize(all_numeric_predictors())               
+```
+
+## Model
+We use the `decision_tree` model type in `parsnip`. We will use the `rpart` tree construction engine. The parameter 'model=TRUE' means that the data will be retained in the fitted object.
+```{r}
+# Define the model specification
+rpart_spec <- 
+  decision_tree() %>% 
+  set_engine("rpart", model=TRUE) %>% 
+  set_mode("regression")
+```
+
+Now construct the workflow.
+```{r}
+# workflow
+surr_workflow <- workflow() %>%
+  add_model(rpart_spec) %>%
+  add_recipe(surrogate_recipe)
+```
+
+## Fit 
+We fit the workflow with the new data.
+```{r}
+surr_fit <- surr_workflow %>% fit(data = train_data_p)
+```
+
+We can extract the engine results to obtain the model object. 
+```{r}
+surr_model_object <- extract_fit_engine(surr_fit)
+```
+
+## Plot
+The variables are all scaled so the cutpoints reported are the number of standard deviations from the mean of each of the variables.
+
+<a name="Figure2"/>
+```{r}
+library(rpart.plot)
+rpart.plot(surr_model_object)
+```
+## Rules
+`rpart` can generate rules which are the equivalent form of a decision tree, and are very explainable, almost self-explaining.
+```{r}
+rules_df = rpart.rules(surr_model_object)
+rules_df %>% knitr::kable() |> kableExtra::kable_styling(font_size=20)
+rules = rpart.rules(surr_model_object, style="tallw")
+```
+Numbers on left (row names) are the rule numbers. They are in importance order.
+
+Rules can also be printed by `rpart`.
+<a name="Table1"/>
+```{r}
+rules %>% knitr::kable()
+```
+
+In the rules and the graph, the cutpoints indicated are in terms of standardized (scaled) variables. To know what they are in the real variable numbers we need to unscale them.
+
+## Scaling and Unscaling
+Can we replace the cutpoints in `surr_model_object$splits` and get them in the results? Yes, and here's how.  
+
+- There's a function `rpart_unscale_object` that makes a new object identical to the old one except for changing the splits that show up in the plot.
+
+Make the plot and the rules:
+<a name="Figure3"/>
+```{r}
+Z = rpart_unscale_object(surr_model_object, train_data_p)
+
+Z %>% rpart.plot()
+Z %>% rpart.rules(style="tallw") %>% knitr::kable()
+```
+
+# Compare Original
+The `train_data_p` dataset has the predictions of the random forest model as `medvp`. We compare them to the predictions made by the surrogate.
+```{r}
+# add surrogate predictions
+surr_result = surr_fit %>% augment(new_data = train_data_p)
+#find metrics
+surr_result %>% metrics(truth=medvp, estimate=.pred)
+```
+The `rsq` measure shows that the surrogate model predicts 86% of the variation in the original black-box random forest model's predictions. That isn't bad.  
+
+We might choose to explain our results in terms of the decision tree rules. The decision tree is an approximation of how the complex model is making decisions to estimate `medv`.
+
+# YVP
+<a name="YVP2"/>
+```{r}
+P = predict(surr_fit, new_data = train_data) %>% 
+  mutate(medv=train_data$medv)
+
+ggplot(rf_pred) +
+  geom_point(aes(x=medv, y=.pred, color="RF")) +
+  geom_abline(aes(slope=1, intercept=0), 
+              color="red", linetype="dashed") +
+  geom_point(data=P, 
+             aes(x=medv, y=.pred, 
+             color="Surrogate")) +
+  scale_color_manual(values=list("darkgreen", "orange"),
+                      name="Model") +
+  labs(title="RF model and Surrogate predictions")+
+  theme_bw()
+```
+Notice how the surrogate model only predicts specific levels of `medv`, not a continuum of values, which is what's wanted. That raises a question: how good can it be conceptually as an explanation. 
+
+# Conclusion
+We used `tidymodels` to model the `Boston` dataset predicting `medv` from the other variables, using a `ranger` random forest model. 
+
+We found two interpretability measures, the variable importance and partial dependence plots for the top two variables.  The random forest model shows a propensity to 'overfit', as we would expect, since it randomly samples a lot of different trees using different drivers to obtain the predictions. 
+
+We created a surrogate model based on a decision tree to generate a rule-based decision tree that approximates the AI result. 
+
+The [rules generated are here](#Table1). And [the tree diagram is here](#Figure1). but these have standardized cutpoints. So the [real tree is here](#Figure3). 
+
+The surrogate model was 84% accurate. Of course the original random forest black-box model was only 91% accurate. So 84% of 91% is `r .84*.91` estimated accuracy for the surrogate model.
+
+YVP plots, [YVP1](#yvp1) and [YVP2](#YVP2), indicated how good the fit was. The surrogate model raised  lot of questions when it predicted only a few levels of `medv` instead of a continuum-like prediction for each house.
+
+# References
+:::{#r1}
+ChatGPT (2025) Model the Boston dataset with parsnip linear model and random forest. Retrieved 10/6/2025 from (https://chatgpt.com/c/68e41538-5894-8332-aeea-7ab0a0fd7b08)
+
+:::{#r2}
+Molnar, C. (n.d.) Partial Dependence Plots. Chapter 19, Interpretable Machine Learning, 3rd edition, continuously updated. Retrieved online on 10/7/2025 from (https://christophm.github.io/interpretable-ml-book/pdp.html)
+
+:::{#r3}
+Hartman, B. (2026) Modeling Workflow Techniques. 
+
+:::{#r4}
+Biecek, P. and Burzykowski, T. (2020) Exploratory Model Analysis. (https://ema.drwhy.ai/)
+

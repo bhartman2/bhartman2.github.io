@@ -1,0 +1,253 @@
+---
+title: Ch08 Tree Models Datacamp
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2025-09-29 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We review the [Datacamp article discussion on tree regression](#r1). Decision trees are in Chapter 8 of the text.
+---
+
+# Introduction
+
+[Datacamp](#r1) has a very good discussion of tree regression, and it also contains some nifty modern uses of R tools to work them. Decision Tree models are based on the work of Breiman et al. [(Breiman et al., 1984)](#r2).
+
+# Packages
+As usual, we have some standard packages, pluys `rpart` etc. for trees. 
+```{r}
+library(ISLR2)
+library(rpart) # for decision trees
+library(rpart.plot) # plotting decision trees
+library(mbadtools, quietly=TRUE) # some extra ggplot functions
+```
+
+# Data
+We use the Boston dataset from `ISLR2`.
+```{r}
+data(Boston)
+Boston
+Boston %>% skim
+```
+
+# Visualizing Data
+We create histograms of the data densities for all variables. The technique is an advanced new one. We wrap the histograms in facets, directly in the ggplot.
+
+```{r}
+# Prepare the dataset for ggplot2
+boston_data_long <- Boston %>%
+ pivot_longer(cols = everything(),
+              names_to = "variable",
+              values_to = "value")
+
+# Create a histogram for all numeric variables in one plot
+boston_histograms <- ggplot(boston_data_long, aes(x = value)) +
+ geom_histogram(bins = 30, color = "black", fill = "lightblue") +
+ facet_wrap(~variable, scales = "free", ncol = 4) +
+ labs(title = "Histograms of Numeric Variables in the Boston Housing Dataset",
+      x = "Value",
+      y = "Frequency") +
+ theme_minimal()
+
+# Plot the histograms
+boston_histograms
+```
+
+You can also get the densities this way. They are graphs on the diagonal.
+
+```{r}
+Boston %>% ggpairs(progress=F)
+```
+# Problem
+Our basic problem is to model the `Boston` data with a decision tree. 
+
+We will use `tidymodels` methods.
+
+# Design
+It's good validation practice to split the data into training and test data. We choose 75\% in training data - analyst's choice!! The `tidymodels` method uses the `rsample` package, part of `mbadtools`.
+
+```{r}
+# Split the data into training and testing sets
+
+set.seed(123)
+data_split <- initial_split(Boston, prop = 0.75)
+train_data <- training(data_split)
+test_data <- testing(data_split)
+```
+
+# Simple Decision Tree
+
+Recipe:
+```{r}
+tree_rec <- recipe(medv ~ ., data = train_data)
+```
+
+Specification: use the package `rpart`.
+```{r}
+tree_spec <- decision_tree() %>%
+ set_engine("rpart") %>%
+ set_mode("regression")
+```
+
+Train the model.
+```{r}
+# Fit the model to the training data
+tree_fit <- tree_spec %>%
+ fit(medv ~ ., data = train_data)
+```
+
+# Evaluate
+Use measures RMSE and R-squared. We will make predictions on the test data, and calculate the metrics of choice.
+
+```{r}
+# Make predictions on the testing data
+predictions <- tree_fit %>%
+ predict(test_data) %>%
+ pull(.pred)
+
+# Calculate RMSE and R-squared
+metrics <- metric_set(rmse, rsq)
+model_performance <- test_data %>%
+ mutate(predictions = predictions) %>%
+ metrics(truth = medv, estimate = predictions)
+
+model_performance
+```
+
+# Analyzing Model Results
+
+So, are our model results good enough?
+
+- RMSE (Root Mean Squared Error): This measures the average difference between the predicted and true values. In your case, the RMSE is 5.22, which means that, on average, the predictions made by the decision tree model are off by approximately 5.22 units from the true values. A lower RMSE value is generally better, as it indicates smaller prediction errors.
+
+- R-squared (R²): This measures how well the model explains the variance in the target variable. It ranges from 0 to 1, with a higher value indicating a better fit. In your case, the R² is 0.689, meaning the model explains approximately 68.9% of the variance in the target variable (medv).
+
+# Predicting New Outcomes
+
+Once you’re happy with the model, it’s time to let the model make predictions on new data.
+
+This is the same as how we did with the test data using the `predict()` function, but we’ll have to provide a new set of data mimicking information about a new house in Boston. It’s a possible scenario when the model goes live in a production environment.
+
+Here's some random data for a new community.
+```{r}
+# Make predictions on new data
+new_data <- tribble(
+ ~crim, ~zn, ~indus, ~chas, ~nox, ~rm, ~age, ~dis, ~rad, ~tax, ~ptratio, ~black, ~lstat,
+ 0.03237, 0, 2.18, 0, 0.458, 6.998, 45.8, 6.0622, 3, 222, 18.7, 394.63, 2.94
+)
+```
+
+And you’ll get the predicted median value (in $1000s) in this particular community:
+
+```{r}
+predictions1 <- tree_fit %>%
+ predict(new_data) %>%
+ pull(.pred)
+predictions1
+```
+# Interpreting the tree
+
+First visualize.
+
+```{r}
+# Plot the decision tree
+rpart.plot(tree_fit$fit, type = 4, 
+           extra = 101, under = TRUE, cex = 0.8, 
+           box.palette = "auto", roundint=F)
+```
+
+The nodes are represented by circles and are connected by lines, showing the hierarchical structure of the decision tree. The tree starts with a root node at the top, and it branches into internal nodes, ultimately leading to the terminal nodes or leaves at the bottom.
+
+Each internal node displays the splitting criterion, which is the predictor variable and the value used to split the data into two subsets.
+
+For example, a node might show “RM < 6.8”, indicating that observations with an average number of rooms per dwelling (RM) less than 6.8 will follow the left branch, while observations with RM greater than or equal to 6.8 will follow the right branch.
+
+The n value in each node represents the number of observations in the dataset that fall into that particular node. For example, if a node shows "n = 100", it means that 100 observations in the dataset meet the criteria of that node's parent nodes.
+
+The percentage value helps you understand the relative size of each node compared to the entire dataset, showing how the data is being split and distributed across the tree. A higher percentage means a larger proportion of the data has followed the decision path leading to the specific node, while a lower percentage indicates a smaller proportion of the data reaching that node.
+
+The predicted value at each node is displayed as a number in a colored circle (node). In a regression tree, this is the average target variable value for all observations that fall into that node.
+
+For example, the last lead node showing 46 means that the average target variable value (in our case, the median value of owner-occupied homes) for all observations in that node is 46.
+
+# Interpreting outcomes
+
+So when interpreting any outcomes, you start at the root node and follow the branches based on the splitting criteria until you reach a terminal node. The predicted value in the terminal node gives the model’s prediction for a given observation and the rationale behind the decision.
+
+# All Predictions
+Let's predict n all the test data.
+```{r}
+p = predict(tree_fit, new_data=test_data)
+data.frame(p)
+```
+
+Notice that the predictions are identical when an observation falls into a certain leaf node.  They all get assigned the mean value, even if their other drivers are very different. The other drivers are not used in the prediction.
+
+# Extracting Rules
+`rpart.rules` can be used to state decision rules which follow the tree logic.
+Use `knitr::kable`  to compress the table so we can see it.
+ 
+```{r}
+rules <- rpart.rules(tree_fit$fit, roundint=F)
+rules %>% data.frame %>% gt()
+rules %>% data.frame %>% 
+  knitr::kable(col.names = c("medv", rep("",23) ))
+```
+
+The kable version is less hard to read. Datacamp says it's this:
+
+medv                                                              
+  11 when rm <  6.9        & lstat >= 15 & crim >= 7.5            
+  17 when rm <  6.9        & lstat >= 15 & crim <  7.5            
+  22 when rm <  6.5        & lstat <  15               & dis >= 1.6
+  26 when rm is 6.9 to 7.4 & lstat >=  7                          
+  27 when rm is 6.5 to 6.9 & lstat <  15                          
+  34 when rm <  6.5        & lstat <  15               & dis <  1.6
+  34 when rm is 6.9 to 7.4 & lstat <   7                          
+  47 when rm >=        7.4
+  
+# Important Variables
+
+We’ve already uncovered the tree diagram and how the model works. One last aspect of the interpretation is understanding the important variables from the dataset.
+
+Here’s why it’s crucial:
+
+- Feature selection. Identifying important variables can help you focus on relevant features and potentially remove less important ones, simplifying your model and reducing noise.
+- Domain knowledge. Gaining insights into which features are most important can help you better understand the relationships between variables and the target variable in the context of your specific problem.
+- Model interpretation. Understanding the key features driving the model’s predictions can provide valuable insights into the decision-making process.
+
+In decision trees, variable importance is usually determined by the features used for splitting at the nodes. Features that are used for splitting higher up in the tree or used more frequently can be considered more important.
+
+The importance of a variable can be quantified by the reduction in the impurity measure (e.g., Gini index or mean squared error) it brings when used for splitting. 
+
+The `vip` package in R (part of `mbadtools`)has taken out all the complexities, and the plot can be obtained through the code below.
+
+Create a variable importance plot.
+```{r}
+var_importance <- vi(tree_fit, num_features = 10)
+var_importance %>% gg_vip(fill="red", color="black", width=.7)
+```
+
+Once you see the plot, you could do further research as to why these variables are important, collaborating with domain experts. For example, based on the above plot, we can infer the top 3 important variables and the rationale:
+
+- RM: The average number of rooms per dwelling is a highly crucial feature, suggesting that houses with more rooms tend to have higher median values.
+- LSTAT: The percentage of the population with lower socioeconomic status is another significant variable, indicating that lower-status neighborhoods are likely to have lower median home values.
+- DIS: The weighted distance to employment centers is a vital variable, showing that houses closer to major employment centers are likely to have higher median values.
+
+So remember to check the variable importance plot before finalizing your model; this can help you create and select better features to optimize the performance.
+
+# Conclusion
+
+In this tutorial, we have explored the fundamental concepts of decision trees and approached not just building models but also interpreting them. Decision trees are powerful and interpretable models for both classification and regression tasks, making them an essential tool in a data scientist’s arsenal.
+
+# References
+:::{#r1}
+1.  Arunn Thevapalan and James Le (2023) Decision Trees in Machine Learning Using R. *Datacamp* Updated May 2023 <https://www.datacamp.com/tutorial/decision-trees-R>
+
+:::{#r2}
+2.  Breiman L., Friedman J. H., Olshen R. A., and Stone, C. J. (1984) Classification and Regression Trees. Wadsworth.

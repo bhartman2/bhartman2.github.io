@@ -1,0 +1,284 @@
+---
+title: Investigating NN and LM
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-31 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We compare a linear and neural network model to predict `Apps` from `Grad.Rate` in the `College` data set. We find them similar.
+---
+
+# Introduction
+
+With all the interest in artificial intelligence (AI) these days, it's good to get an understanding of how it compares to the statistical techniques we have been practicing for years. Linear regression, for example, is very well understood, and allows us to estimate confidence intervals for the coefficients and for predictions. These give us a good idea of how much faith we should have in the predictions made by the linear model. The mathematics is well understood, and the results are determined in advance by the data and the algorithm.  
+
+For linear regression the algorithm is a deterministic optimization problem. Find the plane (straight line, in the case of a single driver or predictor variable) that minimizes the squared difference between the plane predictions and the data points.  It's a problem solved by elementary calculus, and the equations for the coefficients of the drivers (slope of the line in the single-driver case) are specific.
+
+It is thus easy (or relatively easy) to explain to a client who is not a data scientist what the linear regression results mean. They are 'interpretable' or 'explainable', as data analysts say.
+
+There's currently no straightforward way to compare how interpretable or explainable different methods are. Lots of high-powered data scientists are struggling to develop some insights.
+
+An example of an AI algorithm is a neural network. Neural networks are thought to mimic how the brain works, though being computer algorithms, they clearly lack the full capability of a brain. They create nodes from the original data by applying varying weights to the drivers, and then allow the nodes to interact with each other, possibly creating more layers of nodes, often 'hidden'. Ultimately, a final visible node with the prediction is created. 
+
+We can make maps of these nodes and the interactions among them, and display them.  The network is constructed by using random choices of weights, evaluating the results of the weighting, and then adjusting these weights by some method. 
+
+So unlike the linear regression model (LM), the neural network (NN) is not a deterministic specific set of choices; it is influenced by random choices made at a number of points.  The result may converge on a single number for each prediction, but how we got there is like a drunken man's walk, and not precisely repeatable.  The results will differ if we run the NN again, while for the LM rerunning it would get the exact same results.  
+
+That's a level of uncertainty that it's hard to explain to a non-scientist.  How can we be sure the NN will be a good tool to guide us, compared with the LM?  People tend to favor explanations they understand the workings of.
+
+So comparing an LM with an NN is a useful thing for students to do. It lets them see how to compare and how to think about the results of each. 
+
+A good discussion of why neural nets give random results is found at [Randomness in an ANN](#r1).
+
+Three reasons are given for why there is randomness in artificial neural networks.
+
+- Random initialization of weights and biases
+- Randomness in regularization techniques like Dropouts
+- Randomness in optimization techniques like Stochastic Gradient Descent (SGD)
+
+So we cannot expect to get the same answers, even when we run the exact same neuralnet program. The forecasts will be different too, even with the same program. That does not happen with linear regression. We will always get the same slope estimate if we run the liner model on the same data.
+
+# Setting Up the Experiment
+
+We will perform this experiment using the R statistical programming language.  For the comparison we will use the College dataset, offered as part of the ISLR2 package.
+
+We chose a very simple experiment. Two of the columns in the College data are Grad.Rate and Apps.  In choosing which college to apply to, a prospective student might look at the graduation rate at that college.  If you were interested in being sure to get your diploma, it might be good to choose a school with a good record for graduations.  So we would expect schools with higher graduation rates to attract more applications. We can state our idea like this:
+
+- Hypothesis: Schools with higher graduation rates attract more applications.
+
+- H1: As Grad.Rate increases, so does Apps
+
+In R shorthand we can write a formula Apps ~ Grad.Rate to express this. 
+
+Now though we have a theory, creating a model and seeing what it tells us is not proof of the theory. It does not establish anything about whether Grad.Rate causes Apps to go up. The most we can hope for is to establish that the two data items tend to move in the same direction. For a model that would mean that the slope or weight estimated for Grad.Rate is non-zero and is in the right direction, positive. The hypothesis to test can be restated as
+
+- H1: The slope of Grad.Rate > 0
+
+- H0: The slope of Grad.Rate = 0
+
+This is the standard hypothesis test for LM, but we don't actually know the equivalent test for NN.
+
+# Building our models in R
+
+First we load up the relevant R packages for our analysis. We use the tidyverse package and some plotting extensions, and we get the data from the ISLR2 package for the book. For the neural network calculations we use the neuralnet package available on CRAN. There are several choices, but we are loosely following an interesting article found at the [University of Cincinnati Github site](#r2).
+
+# Packages
+Loading the standard packages and the `neuralnet` package.
+```{r packages}
+library(ISLR2)
+library(neuralnet, quietly=TRUE) # apply a neural network to our problem
+library(mbadtools, quietly=TRUE)
+```
+
+# Data
+
+Next we acquire the data in the `College` dataset, included in the `ISLR2` package.
+
+```{r data}
+data(College)
+College %>% skim
+```
+
+# Scaling and Selecting the Data
+
+For a neural network we must scale the data, so no feature is more important because of size or units than another. Scaling the data will not harm the linear regression either.
+
+First we define a function to make each variable fit between 0 and 1; then we select just the columns of interest for our experiment, `Grad.Rate`
+ and `Apps`. Then we apply the function to the two columns, to create the object named `College_Data`.
+
+```{r scale01}
+scale01 <- function(x){
+  (x - min(x)) / (max(x) - min(x))
+}
+```
+
+```{r}
+# select only the data we want for the modeling and scale it
+College_Data <- College %>% select(Grad.Rate, Apps) %>% mutate_all(scale01)
+College_Data %>% skim
+```
+
+# Making Models Robust
+
+A robust model is one that can be used effectively to make predictions from new data. Remember that a model will work best to make predictions on the data it was trained on. For the most part we don't want to predict old facts; we want to predict on new data. That is especially true when we are using a model that we do not know how to assess risk with, such as the NN model.
+
+A good way to test for robustness is to split the data into testing and training sets. We will train our models on 80% of the data, and leave the other 20% to create predictions to test. We will choose the training data randomly by sampling the entire data set.
+
+Now we have a special problem in this article; we want you to be able to reproduce our results on your own!  In R we can do this by defining a specific integer as the seed of our random number generator. Each time the code is run, the random sample will be the same.
+
+```{r seed}
+set.seed(12345) # random seed set for reproducibility in your scripts; a blank means seed chosen by computer, not desirable for show and tell.
+```
+
+Next we select 80% of data for training, placing it in the object College_Data_Train. The rest of the data we put in the College_Data_Test data frame. We can use tidyverse tools to do it.
+
+```{r train}
+College_Data_Train <- sample_frac(tbl = College_Data, replace = FALSE, size = 0.80)
+College_Data_Test <- anti_join(College_Data, College_Data_Train, 
+                               by=join_by(Grad.Rate, Apps))
+glimpse(College_Data_Train)
+glimpse(College_Data_Test)
+```
+
+Observe that the test data consists of 155 colleges, and the training data consists of 622 colleges.
+
+# Linear Regression Model
+To provide a basis for comparison we first need to run the regression on the training data.
+
+```{r linear}
+College_LM1 = lm(Apps~Grad.Rate, data=College_Data_Train)
+summary(College_LM1)
+College_LM1 %>% glance |> gt_add_significance()
+College_LM1 %>% tidy %>% gt_add_significance()
+```
+
+Notice that the coefficient of Grad.Rate is highly significant!! The coefficient of Grad.Rate is .0687 > 0 and significant at the .001 level, so we would reject the null hypothesis that the coefficient is 0. Also it is positive,and that is what we hypothesized. However, the R-squared of this regression (from the glance output) is abysmal, not a good sign.
+
+Analyzing the residual, or departures of the actual data from the predicted data, is extremely important in determining the usability of the linear model.  It is done like this:
+
+```{r linear_residuals}
+College_LM1 %>% gg_residual_plots() 
+```
+
+The four plots help us understand how well the four assumptions of linear regression are satisfied by this data. The assumptions are:
+
+- The residuals are normally distributed (the bell-shaped curve of statistics). This is called *normality*.
+- The residuals have mean (average) value 0. *zero mean*
+- The residuals have a standard deviation that is the same 'everywhere'; meaning for every value of the drivers and every value of the target, and for every predicted value. This is called *homoscedasticity*.
+- the residuals do not show any pattern that indicates their size depends on the value of a driver or target. *'no autocorrelation'* or *independence*. 
+
+We won't discuss the four plots in detail here, but the QQ plot shows big deviations from normal distribution when the residuals are positive, whereas when they are negative they are generally normal. 
+
+Next we predict the values of `Apps` for the _test data_ based on the _training data_ regression result stored in `College_LM1`.
+
+```{r predictlm}
+Test_LM1_Output = predict(College_LM1, newdata=College_Data_Test,
+                          interval="confidence")[,1]
+Test_LM1_CI = predict(College_LM1, newdata=College_Data_Test,
+                      interval="confidence")[,2:3]
+```
+
+Then we plot the test data and the regression line and predicted point values. 
+```{r plotlm}
+ggplot(College_Data_Test, aes(Grad.Rate,Apps)) +
+  geom_point() +
+  geom_line(aes(Grad.Rate,Test_LM1_Output, color="LM")) +
+  geom_point(aes(Grad.Rate,Test_LM1_Output, color="LM"), shape=2)
+```
+
+The metric we will use to measure how well the regression did is the square root of the sum of the squared deviations between the predicted test data and the original test data. We compute our metric, RMSE (root mean squared error) on the test data like this.
+
+```{r SSElm}
+LM1_Test_RMSE = rmse_vec(College_Data_Test[,2], Test_LM1_Output)
+LM1_Test_RMSE
+```
+The number is small because the data are standardized. We can compare this number, `r LM1_Test_RMSE`, to what the NN gets (which of course will change with different runs of the NN, because of the randomness; but we will try to compensate for that later).
+
+# Neural Network Model
+
+Now we will train the neural network on `College_Data_Train`. The neural network injects some randomness into how it is computing the weights, or coefficients, in the fitted equation. So we have to set a seed for it, so you can reproduce these results. When we use the neural net with no parameters, we automatically set the key parameter `hidden` to 1, which means one layer consisting of one neuron.  This is essentially a random equivalent to a linear model. 
+
+```{r neural}
+set.seed(12325) # set the seed for the random ANN stuff.
+College_NN1 <- neuralnet(Apps ~ Grad.Rate, data = College_Data_Train,
+                         hidden=c(3,3,3), linear.output=TRUE, act.fct="tanh")
+```
+
+Next we display the weights (coefficients) defined by the NN. The weights are similar in role to the coefficients of linear regression, but you cannot calculate one from another. However, big weight should correspond to small p-values and big t-values in linear regression. This can be done with a plot. 
+
+```{r nnplot, fig.height=7, fig.width=10}
+plot(College_NN1, rep = 'best') #simple way
+```
+
+The plot shows the RMSE for the Train data set. That is not what we are interested in, so ignore it.
+
+A better measure of accuracy would be the RMSE of the Test data set. Fortunately, we do not need to rerun the NN model to get that.  The `compute()` function in the `neuralnet` package allows us to compute predictions using the training model.
+
+```{r SSEnn}
+Test_NN1_Output <- predict(College_NN1, newdata=College_Data_Test)[,1]
+NN1_Test_RMSE <- rmse_vec(College_Data_Test[, 2], Test_NN1_Output )
+NN1_Test_RMSE
+```
+
+The difference in the RMSE for NN, compared to that for LM, is very very small. A plot shows the differences in the estimated predictions; they are minute and almost cannot be seen!!
+
+```{r nnlmplot, fig.height=7, fig.width=10}
+ggplot(College_Data_Test, aes(Grad.Rate,Apps)) +
+  geom_point() +
+  geom_point(aes(Grad.Rate,Test_NN1_Output, color="NN"), shape=5) +
+  geom_point(aes(Grad.Rate,Test_LM1_Output, color="LM"), shape=2)+
+  coord_cartesian(ylim=c(0,.2))+
+  theme_bw()
+```
+
+So using NN is not really any better or worse than simple linear regression. Plus we have a harder time interpreting the results; what are the specific coefficients for the NN analysis and what do they mean?
+
+# Comparing LM and NN models
+
+How can we communicate a clear comparison of the two models to a naive user?  We need to make a direct comparison of the RMSE of the two methods. To do that, we need to compare LM with some runs of NN with different seeds, because no one run captures the possible variation in the NN results. This will demonstrate the randomness of the NN results. In the following code we will set the number of trials to 3, but that can be changed, and is probably not enough for a statistical comparison.
+
+```{r ntrials}
+ntrials=3
+pr_NN=data.frame(Apps=College_Data_Test[, 2],LM_Apps=Test_LM1_Output, 
+                 CIwidth=Test_LM1_CI[,"upr"]-Test_LM1_CI[,"lwr"])
+pr_RMSE=data.frame(LMRMSE=LM1_Test_RMSE)
+
+for (i in 1:ntrials) {
+  set.seed(500, kind="Wi") #set the seed for the random ANN stuff.
+  College_NN1 <- neuralnet(Apps ~ Grad.Rate, data = College_Data_Train,
+                           hidden=c(3,3,3), rep=3, 
+                           linear.output=TRUE, 
+                           act.fct="tanh")
+
+  Test_NN1_Output <- predict(College_NN1, newdata=College_Data_Test)[,1]
+  pr_NN[,paste0("NN",i,"_Apps")] = Test_NN1_Output
+  
+  NN1_Test_RMSE <- rmse_vec(College_Data_Test[, 2], Test_NN1_Output)
+  pr_RMSE[,paste0("NN",i,"_RMSE")] = NN1_Test_RMSE
+}
+
+mean_NN=apply(pr_NN[,-c(1:2)], 1, mean)
+
+Result = pr_NN %>% mutate(Mean=mean_NN, Diff=LM_Apps-Mean, Out=(Diff>CIwidth)) %>% 
+  relocate(Diff, .after=CIwidth) %>% relocate(Out, .after=Diff) 
+```
+
+Here we show two comparisons. The first is the fraction of predictions by NN that fall outside the 95% confidence interval on the corresponding LM prediction. That value is given by:
+```{r}
+Result %>% round(digits=5) %>% group_by(Out) %>%
+   summarize(count=n(), pct=count/nrow(Result))
+```
+
+A full 25% of the NN predicted values are outside their respective confidence intervals for LM prediction. 
+
+The second is a comparison of the RMSE on each trial with the LM value of RMSE. Those values are
+
+```{r resultscomp}
+pr_RMSE %>% round(digits=4) %>% as_tibble
+```
+They are very similar; the NN algorithm creates no improvement here.
+
+# Discussion and Conclusion
+
+From the last example, you can see that comparing a linear model with a neural network model is not so easy. We had a case in which both methods produced similar RMSE values, even allowing for the randomness of the NN by trying more times.  On the other hand the predictions were significantly different in 25% of the cases.  Whether that amount of deviation is allowable in our thinking about the problem we posed, seeing if it was reasonable to suppose that looking at graduation rate drove a prospective student to apply to a particular school because its rate was higher, is not clear.
+
+Why might we prefer the linear model?  Well, it is easier to explain the method to someone non-technical.  It's based on concepts most college graduates learn and are exposed to every day. And there's no randomness involved in the algorithm.
+
+Why might we prefer the neural network?  It isn't clear to me, for this NN model. A NN model with more 'hidden layers' might work a bit better.  
+
+However, if we knew a bit more about it, we would find out that it would still work (with minor tweaks) if the relation were nonlinear. And perhaps, with `Grad.Rate` and `Apps` the relation is nonlinear, though we might have to try a more advanced neural net with more hidden layers of nodes and therefore more synapses. To test this out, we would have to also try linear regression extensions with nonlinear transformations, such as polynomials or logs, of either the driver or the target or both.  And these transformations break the residual assumptions we make for simple linear regression.  So the picture is still cloudy. 
+
+From an explainability perspective, the advantage is to the linear model. But we'd have to test the differences in prediction to really choose, especially if we think there's a nonlinear relation. 
+
+# References
+::: {#r1}
+1. [Randomness in an ANN](https://towardsdatascience.com/how-to-solve-randomness-in-an-artificial-neural-network-3befc4f27d45) https://towardsdatascience.com/how-to-solve-randomness-in-an-artificial-neural-network-3befc4f27d45
+
+::: {#r2}
+2. [University of Cincinnati github site](http://uc-r.github.io/ann_regression) http://uc-r.github.io/ann_regression

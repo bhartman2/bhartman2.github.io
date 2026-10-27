@@ -1,0 +1,297 @@
+---
+title: College with Linear
+author:
+  name: Bruce Hartman <bruce@ahartman.net
+  affiliation: University of St. Francis
+date: 2026-08-28
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_float: TRUE
+    theme: united
+    highlight: tango
+abstract: |
+  This is a good notebook template to start with. 
+---
+
+# Introduction
+This notebook will show you the basics of setting up a notebook and using it to code and produce finished output.  It will also analyze the `College` dataset, which is found on the website and also in the `ISLR2` package. It is loosely based on Applied Exercise 2.8 in [ISLR (2013)](#r1).
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+# Packages {-}
+Many people have written 'packages' for R, specific code for different analyses and visualizations.  To make use of them we load certain ones here, which represent state of the art R coding. We do this in a code 'chunk'.
+
+For our MBAD courses we have a meta-package called `mbadtools` which contains the main packages we will need for this course, as well as some useful functions.
+
+We install and load package `mbadtools` from GitHub. This package is not on the usual place, CRAN.
+```{r}
+# run only once a semester
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+```
+
+Make packages available to the notebook.
+```{r}
+# load mbadtools
+library(mbadtools)
+```
+
+We also need to install the `ISLR2` package, which contains datasets for this course.  It is on CRAN, so we can install it with the usual command.
+```{r}
+if(!("ISLR2" %in% installed.packages())) install.packages("ISLR2")
+library(ISLR2) # Make sure that the ISLR2 package is loaded
+```
+
+# Previews
+When you save the notebook, an HTML file containing the code and output will be saved alongside it. Click the *Preview* button to preview the HTML file.
+
+The preview shows you a rendered HTML copy of the contents of the editor, which has an .nb.html file extension. *Preview* does not run any R code chunks. Instead, it displays the output of the chunk when it was last run in the editor. 
+
+Try it.
+
+# Data
+When the dataset is provided by the book authors, it will be in the `ISLR2` package.  Once the package is enabled in the Packages section, it's available to you. You make it an object with the `data()` function. You show it by saying its name. Or you don't need to use the` data()` function.
+
+```{r}
+data(College)
+College
+```
+
+Notice how you can display it by simply calling the name of the object. 
+
+Notice that there are row names in this dataset, one for each college in the observations. 
+
+Also notice there are many pages of data and you can look through them. 
+
+Finally, notice the little black triangle upper right, that lets you see more columns in the data. There are 18 columns (plus the row names) and 777 rows or observations.
+
+**The `fix()` function shown in the text should not be used any more**, despite appearing in the book. It actually lets you edit the data, and often we mistakenly do that.
+
+If you would like to see what the columns mean, do the following to show the data description in the lower right Help tab. It won't show in your notebook output, but you can copy key things from there and paste into here.
+```{r echo=TRUE}
+?College
+```
+
+This only helps when the data is provided by the authors in their package; the method works for any data which comes from any package. Packages often contain some datasets so their examples will run. Datasets coming from an R package are supposed to have extensive definitions of all the columns.
+
+# Working with Data in a csv or Excel file
+
+You will also be working with your own data. So you have to learn how to get it from a data file, such as a .csv file.  
+
+I think the best way is to use the *Import Dataset* button in the upper right panel of RStudio. It lets you search for the data file on your computer, and shows you a preview of the data so you can cut out the parts that are not relevant, before importing. 
+
+And it also displays the code that will be used to read the data file. You will want to copy this code and include it in your notebook, as below.
+
+Here is the procedure. I'm using a different object name, `college` with a small c for the data gotten this way. It's identical.
+
+```{r}
+# get data from college.csv
+# search with Import Dataset in Environment panel
+#The code below is copied from the Import Dataset panel, upper right.
+library(readr)
+college <- read_csv("~/stfrancis/MBAD640 Data Mining/College.csv")
+college
+```
+
+Observe that the first column here is given the name ...1, and is an actual column in the data, not a series of row names.
+
+You don't need the `View()` function; it makes the display in the tabs at the top, like a spreadsheet, but not editable.  
+
+From here on we use the `ISLR2` object `College`.
+
+# Data Description
+The next step is to look at the data in various ways.
+
+A simple way using `tidyverse` is preferred for most purposes:
+```{r}
+College %>% glimpse
+```
+
+The pipe %>% (from tidyverse) lets you take an object and send ('pipe') it to a function's input.  Many data scientists prefer this way of applying functions. It gives the same result. You can type the pipe symbol using Control-Shift-M in the RStudio editor. 
+
+The object `College` has row names, which are allowed in an object of class 'dataframe'. 
+```{r}
+College
+```
+
+A 'tibble' object does not allow row names.
+```{r}
+College %>% as_tibble
+```
+
+How can we see the row names if we convert to tibbles? Use the function `rownames`.
+
+```{r}
+College %>% rownames %>% as_tibble_col(column_name="Row Names")
+```
+
+# Data Description Continued
+
+It can be useful to run the summary but the layout is a little hard to read and use.
+```{r}
+College %>% summary
+```
+
+Notice that there is no missing data.  If there were, some columns would have a line for the number of NAs. 
+
+Notice that the character column `Private` is turned into a factor variable with two values, corresponding to Yes and No. The other columns are numeric, and we can see several statistics about each of them, including mean, median, min, and max.
+
+A friendlier way is to use package `skimr` in `mbadtools` which has a `skim` function. It has lots of options, too.
+```{r}
+College %>% skim()
+```
+Here three different sets of results are shown. 
+
+The first shows column types and counts. The next two show categorical (text or indicator or factor) variables and numeric variables respectively.
+You can see means, medians (column p50), other quartiles, max (p100), and min (p0) for each column.
+
+# Data Visualization
+
+Sometimes we want a graphic display of the data.  The right way to do this is with the `ggpairs()` function from `GGally`. It shows correlations, density graphs, and dot plots of the pairs of columns. The disadvantage is the graph can get hard to read with an entire dataset of 18 columns. 
+
+We show how to select columns, leaving out the first column which is a factor variable (text variable). You can also use the column names. Notice that we set the figure height and width in the chunk to make the graph more readable. Dimensions are inches.
+
+```{r fig.height=10, fig.width=10}
+College %>% select(2:4, 9:10) %>% ggpairs(progress=FALSE)
+```
+
+The plot allows us to see relations between pairs of the columns, using a scatter plot. 
+
+It also uses density plots to show us whether the column values are concentrated anywhere in the range of the data. For instance, `Outstate` and `RoomBoard` are concentrated more in the middle, whereas Accept is concentrated at the low end of the values.
+
+The dot plots show `Accept` and `Enroll` seem to be related like a line with variations, and the correlation coefficient between them is .912.
+
+# Research Problem
+
+Come up with a hypothesis about the data. This is how we ask questions that the data might help us answer.
+
+ - Hypothesis 1: Do college applicants consider graduation rate of the college when they choose a college to apply to?
+
+Operationalizing the question: 
+
+- Do students apply more to colleges with high graduation rate? That is, do colleges with high grad rate get more applications? 
+
+We can think of this as high `Grad.Rate` means more `Apps`, or there is a systematic positive relation between `Grad.Rate` and `Apps`.
+
+That might be a reasonable theory to test. Do potential college students consider the graduation rate when selecting a college?  There is anecdotal evidence both ways; rational thinking implies truth, but many students with sizeable loans chose colleges that don't actually manage to graduate many students. Trump University was one - there are many other private university examples, including many that failed.
+
+- Hypothesis 1: `Apps` depends on `Grad.Rate`, with a positive relation. In R shorthand, as a formula, 'Apps ~ GradRate'.
+
+We can check whether that hypothesis might be false with the data. For instance we could run a linear regression or a correlation analysis.
+
+**You can never check that a hypothesis is true,** only whether the example data do not obey the hypothetical law.
+
+# Guessing a Linear Relation
+
+Refining our hypothesis further, we might guess there is a relation with `Grad.Rate` predicting `Apps`.
+
+Here is a graphical view of the relation that shows the use of the `ggplot()` functions.
+
+```{r}
+College %>% 
+  ggplot() +  
+    geom_point(aes(Grad.Rate, Apps))
+```
+What is interesting about the graph?
+
+- 1. Should we put a title on the graph for our report?
+- 2. One school has almost 50000 `Apps`, much larger than the others. Is this an *outlier* that matters, or is this real data? Maybe there is one really big school that gets a lot of `Apps`.
+- 3. Why does a college graduate more than 100% of its students?  What question does that raise?  Is this point an *outlier*?  Should we omit it from consideration? Probably a data entry error. But we have no way to check. Could we have seen this from the summary or skim? YES. But the graph makes it clearer.
+- 4. Does there seem to be some trend relating `Apps` to `Grad.Rate`? Maybe, and that would provide an answer of a sort to our question. How strong is the relation?
+
+Fixing 1. is easy. Add a title to plot. You can also change the axis labels.
+
+**Plots are created in layers**. We can take a plot and add a layer using another `ggplot` function, with a title, and x and y axis labels.
+
+```{r}
+ggplot(College, aes(Grad.Rate,Apps)) +
+  geom_point() +
+  labs(title="Does a high Graduation Rate drive more Applications?",
+       x="Graduation Rate (%)",
+       y="Number of Applications")
+```
+
+# Outliers
+
+One college seems to graduate over 100% of its students.  Is that a data entry error?  We can't tell simply from the data, and we can't investigate how the data got there.  It's an example of an outlier. 
+
+Possibly this data point should be left out, since it is obviously wrong for this column. But maybe it's OK for the others.  Outlier analysis is tricky and involves personal investigation rather than computer analysis. We'll leave it in for now.
+
+# Regression
+
+Responding to 3, 2 and 4 can be done with linear regression. That is easy in R. 
+
+The `lm()` function is linear modeling or regression as you learned in statistics. It creates a new object which holds the results of the regression and lots of related stuff I won't bore you with. We will call the new object `Collegefit`.
+
+The `summary()` function applied to the regression object shows us a simple panel of results, much like softwre packges for statistics.  Better, `glance` and `tidy` produce readable and usable results.
+
+We will spend a lot of time the next couple of weeks learning to read and interpret such output.
+
+```{r}
+Collegefit = lm(Apps~Grad.Rate, data=College)
+Collegefit %>% summary
+```
+
+What does this tell us? That is what we will learn next week--- how to interpret a linear regression.
+
+We can break the output into easier to read parts using the `glance(), tidy()` functions from the `broom` package we loaded with `mbadtools`. The first gives the overall regression statistics. The second gives those statistics related to the individual regression coefficients. I like to set the 'conf.int' parameter in `tidy` to TRUE.
+
+```{r}
+Collegefit %>% glance()
+Collegefit %>% tidy(conf.int=TRUE)
+```
+
+# Residuals
+
+Residual analysis is another very important part of interpreting regressions. 
+
+Use the function `gg_residual_plots` in our `mbadtools` package to do it.
+```{r}
+Collegefit %>% gg_residual_plots()
+```
+What does this tell us? Learn next week.
+
+# Visualizing Regression
+
+Visualize the result of regression. 
+
+We will draw the data graph, but add a layer with the regression line in red, computed from the coefficients of the regression obtained from the `Collegefit` object.
+
+```{r}
+ggplot(College) +
+  geom_point(aes(Grad.Rate, Apps)) +
+  # new layer
+  geom_abline(aes(slope=coef(Collegefit)[2], 
+                  intercept=coef(Collegefit)[1]), color="red", linewidth=1.5, 
+              linetype="dashed") +
+  # new layer
+  theme_bw()
+```
+
+There is another way, which does not even require you to compute the regression first, using the `geom_smooth()` function from `ggplot`.
+
+```{r}
+ggplot(College) +
+  geom_point(aes(Grad.Rate, Apps)) +
+  # new layer
+  geom_smooth(aes(Grad.Rate, Apps),method="lm", formula='y~x')
+```
+
+This method allows you to plot a shaded band around the regression line, which represents 2 standard errors of deviation in the regression prediction at each level of `Grad.Rate`. 
+
+About 95% of the predictions for the average at that `Grad.Rate` will be in the gray shaded area.  Most of the real points are outside, so what does that tell you about how well the regression models or predicts the real data?
+
+Notice that the R-squared value in the `summary()` or `glance()` above is only .02, or about 2% of the variation explained by the regression line. So the regression fit is actually quite poor! Our hypothesis is not supported by a regression model on this data.  However in the `tidy()` the coefficient of `Grad.Rate` (the 'slope'), has a p-value of 4.02*10^{-05} or .0000402, almost 0, so there is some slight relation.
+
+# Conclusion
+
+That's all for now. Hope you can learn to build a notebook this way.  You can try building this one or something like it on your own.
+
+# References
+::: {#r1}
+1. ISLR (2013), Applied Exercise 2.8, page 54ff.
+
+
+
+

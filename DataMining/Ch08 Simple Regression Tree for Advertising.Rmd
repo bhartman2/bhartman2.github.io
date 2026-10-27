@@ -1,0 +1,164 @@
+---
+title: Ch08 Simple Regression Tree for Advertising
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2025-09-29 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We apply decision trees to the Advertising data. Decision trees are in [Chapter 8 of the text](#r1).
+---
+
+# Introduction
+
+Here is a basic discussion of regression trees. A good source for this topic is from the [University of Cincinnati](#r1), which has a good business analytics program. Another good one is from [Datacamp](#r2). The basic reference on tree modeling is [Breiman et al., 1984](#r3).
+
+Decision Trees work by recursively partitioning the data one variable at a time. Predictions are obtained by finding out which leaf of the tree an observation comes out in; the mean value of the target in that leaf is assigned as the prediction. 
+
+The interpretation of a decision tree is easy, though perhaps not as easy as a linear regression. But it has a lot of intuition behind it. Of course data scientists have carried the concept to extremes, designing more complicated variations. And those are correspondingly less explainable.
+
+[Our text](#r4) gives a good discussion of decision trees and their variations. However, this notebook does not follow the book. It's even simpler.
+
+# Packages
+
+As usual, we have some standard packages. Code for regression trees can be found in the packages `rpart, rpart.plot` which you must load.
+
+```{r}
+library(ISLR2)
+library(rpart) # for decision trees
+library(rpart.plot) # plotting decision trees
+library(mbadtools, quietly=TRUE) # some extra ggplot functions
+```
+
+# Data
+
+Load the advertising data. It's in a csv file from early in the course. You can use Import Dataset.
+
+```{r}
+Advertising <- read_csv("Advertising.csv")
+```
+
+# Data Description
+
+Give the data a short df name.
+
+```{r}
+data = Advertising
+data
+```
+
+The first column has a strange name. It numbers the Ad Campaigns studied. Sales is considered to be the target variable. the others are the drivers, the amount invested in the types of advertising for the campaign.
+
+# Data Wrangling
+We change the name of the first column.
+```{r}
+data = data %>% rename(Campaign=1)
+data %>% glimpse
+```
+
+# Research Problem
+We will build a regression tree to model the prediction of Sales from the other variables. This is a supervised method. We will compare the result with a linear model.
+
+# Method
+We will use a simple regression tree.
+To build the tree we will use the `rpart` function from the package of the same name.  
+
+# Set a seed
+Since it does some randomization we set a seed so the notebook will reproduce.
+```{r}
+set.seed(1)
+```
+
+# Calculate Regression Tree
+We want a regression tree so we set 'method' to "anova".
+
+```{r}
+tree.rpart <- rpart(
+  formula = Sales~TV+Radio+Newspaper,
+  data    = data,
+  method  = "anova" #this is for regression tree
+)
+```
+
+# Summarize result
+
+The summary tells you what happened at each step of the construction, and much else.
+
+```{r}
+summary(tree.rpart)
+```
+
+# Visualize the tree
+There are various types of plots. The default is type=2.
+```{r}
+rpart.plot(tree.rpart) # default type is 2
+```
+More types of plot.
+```{r}
+rpart.plot(tree.rpart, type=4)
+rpart.plot(tree.rpart, type=5)
+```
+
+
+The numbers at the bottom are the mean values of Sales in the various tree classes. The percentages are the percentages of cases that fall there.
+
+# Predictions
+
+```{r}
+tree.prediction=predict(tree.rpart,data)
+ggplot(data, aes(1:nrow(data), Sales)) + 
+  geom_point() +
+  geom_point(aes(1:nrow(data), tree.prediction), color="red", shape=5)
+```
+
+# Calculate mean average percentage error (MAPE)
+
+```{r}
+tree.prediction.error = sum(abs(tree.prediction - data$Sales))/sum(data$Sales)
+tree.prediction.error
+```
+
+```{r}
+plotcp(tree.rpart)
+```
+
+You can see that the relative error declines till a cp value of about .04, then levels off.
+
+# Linear Regression
+Now we do a linear regression on all drivers for comparison and report the MAPE of the predictions on the dataset.
+
+```{r}
+model1 = lm(Sales ~ TV + Radio + Newspaper, data)
+model1.prediction = predict(model1, data )
+model1.prediction.error = sum(abs(model1.prediction - data$Sales))/sum(data$Sales)
+model1.prediction.error
+```
+
+# Conclusion
+Tree prediction error is a bit less than ordinary regression prediction error. You'll get a different answer if you rerun the tree with a different seed.
+
+```{r}
+data.frame(MAPE.linear = model1.prediction.error, 
+           MAPE.tree = tree.prediction.error)
+```
+
+# References
+:::{#r1}
+1. @bradleyboehmke (2018) UC Business Analytics R Programming Guide. *UC Business Analytics*  https://uc-r.github.io/regression_trees
+
+:::{#r2}
+2. Arunn Thevapalan and James Le (2023) Decision Trees in Machine Learning Using R. *Datacamp* Updated May 2023
+https://www.datacamp.com/tutorial/decision-trees-R
+
+:::{#r3}
+3. Breiman L., Friedman J. H., Olshen R. A., and Stone, C. J. (1984) Classification and Regression
+Trees. Wadsworth.
+
+:::{#r4}
+4. ISLR (2013) Chapter 8: Tree-Based Methods. page 303ff.
+

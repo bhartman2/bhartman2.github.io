@@ -1,0 +1,268 @@
+---
+title: "Heart AI with XGBoost"
+author: "[Bruce Hartman](https://drbrucehartman.net/brucewebsite/)"
+date: "Last updated: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_notebook: 
+    default
+  html_document:
+    css: style.css
+    theme: united
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: hide
+    code_download: true
+# bibliography: references.bib
+link-citations: true
+---
+
+# Introduction {-}
+
+In this notebook we use XGBoost to make predictions of RestBP from the Heart data. The theory of the model can be found in [References] [1,2,3].
+
+# Packages {-}
+
+Loading libraries:
+```{r Load libraries, message = FALSE}
+library(tidyverse) # used to manipulate data and plot
+library(ISLR2) #package contains the data files, but not this one
+library(ggfortify) # some extra ggplot functions
+library(GGally) # pairs ggplot and other options
+library(flextable) # nice displays of printed data
+library(DT) #more nice table displays from RStudio
+library(broom) # neat model summary
+library(car) # useful tools for regression analysis
+library(MASS) # for LDA analysis
+library(class) # for knn analysis
+library(caret) # for confusion matrix and for crossvalidation
+
+library(xgboost)
+```
+
+# Data {-}
+
+We import the Heart data made all numeric from the rds file created in [References] [1].
+
+```{r}
+readRDS(file="Heartall.rds")
+Heartall
+```
+
+# Data Description {-}
+
+```{r}
+Heartall %>% summary
+```
+
+# Data Wrangling {-}
+
+It's desirable to scale the data for xgboost.
+
+```{r}
+Heartall.scaled = Heartall %>% sapply(FUN = function (x) {
+  (x-min(x))/(max(x)-min(x))})  %>% data.frame
+Heartall.scaled %>% summary
+```
+
+#One-Hot encoding of categorical variables
+
+Package <code>mltools</code> is best at one-hot encoding. It uses package <code>data.table</code>, which is already incorporated into tidyverse.
+
+```{r}
+library(mltools)
+dfx = one_hot(as.data.table(Heart))
+dfx %>% glimpse
+dfx.scaled =dfx %>% sapply(FUN = function (x) {
+  (x-min(x))/(max(x)-min(x))})  %>% data.frame
+dfx.scaled %>% summary
+```
+
+# Research Problem {-}
+We will use xgboost to predict RestBP from all the other drivers.  WE anticipate a better accuracy than the other methods. Here are the previous results.
+
+```{r}
+AccuracyComparisonAll = readRDS(file="AccuracyComparisonAll.rds")
+AccuracyComparisonAll %>% mutate(Measure = "RMSE", .before=1) %>% 
+  DT::datatable(caption="Accuracy Comparison, all drivers")
+```
+
+
+# Analysis {-}
+
+We follow [References] [2] for the modeling.
+
+## Preparing data for xgboost
+
+Separate the target variable (called the label) from the others, the covariates
+
+```{r}
+Heartall.scaled_covariates = Heartall.scaled %>% select(-RestBP)
+Heartall.scaled_labels = Heartall.scaled %>% select(RestBP)
+```
+
+```{r}
+dfx.scaled_covariates = dfx.scaled %>% select(-RestBP)
+dfx.scaled_labels = dfx.scaled %>% select(RestBP)
+```
+
+## Create data matrix
+
+```{r}
+Heartall.scaled_covariates_matrix = data.matrix(Heartall.scaled_covariates)
+Heartall.scaled_labels_matrix = data.matrix(Heartall.scaled_labels)
+```
+
+```{r}
+dfx.scaled_covariates_matrix = data.matrix(dfx.scaled_covariates)
+dfx.scaled_labels_matrix = data.matrix(dfx.scaled_labels)
+```
+
+## Convert to Dmatrix
+
+This step is desirable because the Dmatrix format is designed for sparse matrices.
+
+```{r}
+dheart = xgb.DMatrix(data = Heartall.scaled_covariates_matrix,
+                     label = Heartall.scaled_labels_matrix)
+```
+
+```{r}
+dfxheart = xgb.DMatrix(data = dfx.scaled_covariates_matrix,
+                     label = dfx.scaled_labels_matrix)
+```
+
+## XGBoost run
+
+```{r}
+fit.xg.all = xgboost(data = dheart, nrounds=50,
+                     max_depth=3, verbose = F)
+```
+
+```{r}
+fit.xg.oh = xgboost(data = dfxheart, nrounds=50,
+                     max_depth=3, verbose = F)
+```
+
+## Prediction
+
+```{r}
+pred.xg.all = predict(fit.xg.all, newdata=Heartall.scaled_covariates_matrix)
+pred.xg.all.unscaled = mean(Heartall$RestBP) + pred.xg.all*sd(Heartall$RestBP)
+pred.xg.all.unscaled %>% summary
+```
+
+```{r}
+pred.xg.oh = predict(fit.xg.oh, newdata=dfx.scaled_covariates_matrix)
+pred.xg.oh.unscaled = mean(dfx$RestBP) + pred.xg.oh*sd(dfx$RestBP)
+pred.xg.oh.unscaled %>% summary
+```
+
+## Visualization
+
+```{r}
+plot.xg.all = ggplot(Heartall) +
+  geom_point(aes(RestBP, pred.xg.all.unscaled))+
+  geom_abline(aes(slope=1, intercept=0), color="blue", linetype="dashed", linewidth=1) +
+  theme_bw() + 
+  labs(title="RestBP vs Fitted Values",
+       subtitle="XGBoost, all drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+plot.xg.all
+```
+
+```{r}
+plot.xg.oh = ggplot(dfx) +
+  geom_point(aes(RestBP, pred.xg.oh.unscaled))+
+  geom_abline(aes(slope=1, intercept=0), color="blue", linetype="dashed", linewidth=1) +
+  theme_bw() + 
+  labs(title="RestBP vs Fitted Values",
+       subtitle="XGBoost, one-hot drivers",
+       x="Actual RestBP (mmHg)", y="Fitted RestBP")
+plot.xg.oh
+```
+
+Quite biased.
+
+## Importance
+
+```{r}
+importance_matrix = xgb.importance(names(Heartall.scaled_covariates_matrix), 
+                                   model=fit.xg.all)
+importance_matrix
+library(Ckmeans.1d.dp) # required for ggplot version
+xgb.ggplot.importance(importance_matrix, top_n = 7) + 
+  theme_bw() + theme(legend.position='none')+
+  geom_label(aes(label=round(importance_matrix$Gain[1:7],4)))
+```
+
+## Feature plot
+
+We can visualize a composite of all the trees used in the model. The numbers at the leaves are the odds of arriving at that leaf.
+
+```{r}
+library(DiagrammeR) # needs to be installed for this plot.
+xgb.plot.multi.trees(feature_names = names(Heartall.scaled_covariates_matrix), 
+                     model = fit.xg.all, features_keep = 3)
+```
+
+```{r}
+odds_to_probs <- function(odds){
+    return(exp(odds)/ (1 + exp(odds)))
+}
+
+# probability of top leaf
+odds_to_probs(-0.28412)
+```
+
+There is a 43% likelihood of arriving in leaf 1 averaged over all trees included in the analysis for the model.
+
+## Accuracy
+
+```{r}
+accuracy.rmse.xg.all = ModelMetrics::rmse(pred.xg.all.unscaled, Heartall$RestBP)
+accuracy.rmse.xg.all
+```
+
+The accuracy is `r accuracy.rmse.xg.all`.
+
+```{r}
+accuracy.rmse.xg.oh = ModelMetrics::rmse(pred.xg.oh.unscaled, dfx$RestBP)
+accuracy.rmse.xg.oh
+```
+
+One-hot encoding helped a bit.
+
+## Comparison
+
+```{r}
+AccuracyComparisonAll %>% 
+  mutate(XGB = accuracy.rmse.xg.all %>% round(digits=4)) %>%
+  mutate(XGOH = accuracy.rmse.xg.oh %>% round(digits=4)) %>% 
+  mutate(Measure = "RMSE", .before=1) %>% 
+  DT::datatable(caption="Accuracy Comparison, all and one-hot drivers")
+```
+
+# Conclusion {-}
+
+This XGBoost model, one-hot encoded or not, gives results worse than regression measured by RMSE as an accuracy. It appears to be quite biased, as was a neural net and a random forest.
+
+One-hot encoding helped, but not a lot.
+
+# References {-}
+
+1. [Amazon AWS: How XGBoost Works](https://docs.aws.amazon.com/sagemaker/latest/dg/xgboost-HowItWorks.html)
+
+2. [Machine Learning with XGBoost (in R)](https://www.kaggle.com/code/rtatman/machine-learning-with-xgboost-in-r/notebook)
+
+3. [Simplilearn: What is XGBoost?](https://www.simplilearn.com/what-is-xgboost-algorithm-in-machine-learning-article)
+
+# R session info {-}
+
+```{r session info, echo=FALSE, comment=""}
+xfun::session_info()[1]
+```
+

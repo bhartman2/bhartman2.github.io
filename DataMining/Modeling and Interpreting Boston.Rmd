@@ -1,0 +1,313 @@
+---
+title: Modeling and Interpreting Boston
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-18 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some `tidymodels` modeling of the Boston dataset using `xgboost` and interpret it with `vip` and `pre`.
+---
+
+# Introduction
+We are going to estimate a model using `xgboost`, a black-box method, for the Boston dataset. Then we try to make it explainable with a surrogate, including RuleFit (with `pre`). We will also compute variable importances with Shapley values using `vip` 
+
+The motivation to provide RuleFit surrogates and interpretation with Shapley values for importance comes from [(Molnar, 2025)](#r2).
+
+Here we use a `tidymodels` workflow for the estimation.  
+
+# Packages
+As usual, we have some standard packages. 
+```{r}
+library(ISLR2) #data
+library(mbadtools) # some extra packages
+```
+
+# Data
+We'll use the `Boston` dataset from the `ISLR2` package.
+```{r}
+data("Boston")
+Boston %>% skim
+```
+
+There's no missing data, all 13 are numeric, and `chas` appears to be binary. the target variable will be `medv`, the median value of homes in a community.
+
+# Workflow with `tidymodels` 
+There are multiple steps. Set a seed for reproducibility.
+```{r}
+set.seed(2025)
+```
+
+# Data
+We looked at the `Boston` dataset before.
+
+# Design - Crossvalidation
+Split the data into training and test datasets. We use an 80-20 split.
+```{r}
+set.seed(2025)
+split <- initial_split(Boston, prop = 0.8, strata = medv)  # medv is the outcome
+train_data <- training(split)
+test_data  <- testing(split)
+```
+
+# Recipe
+This is a basic approach. The recipe creates the formula and the data in a standard manner. It also allows some modification such as scaling and removing variables with little variance, that is almost constant and therefore unable to affect anything.
+
+No fancy preprocessing, but center/scale numeric predictors. Most AI models work better with scaled predictors (drivers). Model `medv` using all other variables.
+```{r}
+boston_recipe <- recipe(medv ~ ., data = train_data) %>%
+  step_nzv(all_predictors()) %>%  # remove near-zero variance if any
+  step_normalize(all_numeric_predictors()) # center & scale numeric predictors
+```
+
+# Black-Box Model
+We model with `xgboost`, a popular and quite good model. The modeling code is in the `parsnip` package. See [Boosted trees via xgboost](#r4). We use the default parameters, which often do well.
+
+```{r}
+xg_spec <- boost_tree() %>%
+  set_engine("xgboost") %>% 
+  set_mode("regression")
+
+xg_workflow <- workflow() %>%
+  add_model(xg_spec) %>%
+  add_recipe(boston_recipe)
+
+# Fit linear model on training data
+xg_fit <- xg_workflow %>% fit(data = train_data)
+```
+
+# Evaluate Metrics
+```{r}
+xg_pred <- predict(xg_fit, test_data) %>%
+  bind_cols(test_data) %>%
+  rename(.pred = .pred)
+```
+
+Compute metrics: 
+The `metrics` function is from the `yardstick` package. Remember we selected the metrics to use earlier.
+```{r}
+xg_metrics <- xg_pred %>% metrics(truth = medv, estimate = .pred)
+xg_metrics
+```
+
+The model achieved almost 89% r-squared and an rmse of 3.35 thousand dollars.
+
+# Variable importance
+For interpretation of 'black box' models we need to do something to explain the predictions. Read [(Molnar, 2025)]($r2) for more on interpretability calculations. One such is variable importance. 
+
+We can extract the fitted values and variable importance from the random forest from `parsnip` using `vip`. For the linear model, the variable importance is defined as the absolute value of the coefficient of the variable. We will use `vip::vi` to construct the data when there is no `variable.importance` created by the `parsnip` model 
+
+Extract `parsnip` fit object. Get a common data object to plot by using `vip::vi` for the model, and use model-agnostic permutation importances instead of those automatically done by the `xgboost` model.
+
+We need to construct a prediction function for the `xgboost` result. This function works for a `tidymodels` workflow, a `parsnip` model, or a raw `xgboost` model.
+
+```{r}
+# Permutation-based variable importance
+
+pred_wrapper <- function(object, newdata) {
+  # If it's a workflow (parsnip + recipe)
+  if (inherits(object, "workflow")) {
+    # Make sure you pass a data.frame with all predictor columns
+    predict(object, new_data = newdata) %>% 
+      dplyr::pull(.pred)
+  } 
+  # If it's a parsnip model_fit
+  else if (inherits(object, "model_fit")) {
+    predict(object, new_data = newdata) %>% 
+      dplyr::pull(.pred)
+  } 
+  # If it's a raw xgboost Booster
+  else if (inherits(object, "xgb.Booster")) {
+    predict(object, as.matrix(newdata)) %>% 
+      dplyr::pull(.pred)
+  } else {
+    stop("Unsupported object type for pred_wrapper")
+  }
+}
+```
+
+Now we calculate permutation importances using `vip`. Randomization in the permutations requires setting a seed for reproducibility.
+```{r}
+set.seed(123)
+
+xg_vi_perm <- vi(
+  xg_fit,
+  method = "permute",
+  train = train_data,
+  target = "medv",
+  metric = "rmse",
+  nsim = 5,
+  pred_wrapper=pred_wrapper,
+  smaller_is_better = TRUE
+)
+
+# View results
+xg_vi_perm
+```
+
+We plot the vip.
+<a name="Figure1"/>
+```{r fig.width=12}
+xg_vi_perm %>% gg_vip() + labs(subtitle="xgboost")
+```
+
+`lstat` and `rm` are the most important variables in the model. Remember that `xgboost` is based on random choices, so you could get different importances with another run. 
+
+# Partial dependence 
+Partial dependence plots show the marginal effect of a feature (or two) on the predicted outcomes. [(Molnar, n.d.)](#r2) 
+
+Find the 2 top variables from the black-box model:
+```{r}
+top_var_xg <- xg_vi_perm$Variable[1:2]
+cat("\nxgboost Top variables by importance: ", top_var_xg)
+```
+
+Partial dependence plots on the top two variables, using `pdp` to extract the proper data. Construct the data for plotting:
+```{r}
+# use pdp to get data to plot
+xg_fit_obj <- extract_fit_parsnip(xg_fit)$fit
+
+pd_xg1 <- pdp::partial(object=xg_fit, pred.var = "lstat", 
+                   train = train_data,
+                   pred.fun = pred_wrapper,
+                   plot=FALSE)
+ 
+pd_xg2 <- pdp::partial(xg_fit, pred.var = "rm", 
+                   train = train_data,
+                   pred.fun = pred_wrapper,
+                   plot=FALSE)
+```
+
+Plot the constructed data frames.  Rug plots, to show the density of the axis variables, are a good idea, according to [(Molnar, Chapter 19)](#r2). 
+
+I like the dot plots better. We put the plots side by side.
+<a name="Figure2"/>
+```{r}
+wrap_plots(ncol=2,
+      gg_pdp(pd_xg1),
+      gg_pdp(pd_xg2)
+      )
+```
+The relation is clearly not linear for the black-box model. The plot shows a steady decline till a break at an `lstat` of about 1 sd above the mean, when it flattens out.  That value of `lstat` is `r mean(Boston$lstat) + sd(Boston$lstat)`, or around 20%. For `rm` the plot is an S curve going up between 6.5 and 7.5 rooms.
+
+# SHAP Importance
+Shapley values are a different method of calculating importance. Here we calculate them with the `vip` package, automatically loaded with `mbadtools`.
+```{r warning=FALSE}
+vi_shap(xg_fit, train=train_data, 
+        feature_names=colnames(xg_fit$pre$mold$predictors),
+        pred_wrapper=pred_wrapper,
+        nsim=30) %>%
+  gg_vip(width=.7) + labs(subtitle = "chas==0")
+```
+
+```{r}
+# library(fastshap) # `fastshap` is included in `vip` package
+library(shapviz) # a special visualization package with extra viz options
+shap <- fastshap::explain(xg_fit, X = train_data %>% select(-medv), 
+                          nsim = 10, 
+                          pred_wrapper = pred_wrapper, 
+                          shap_only=FALSE,
+                )
+X_pred = data.matrix(train_data %>% select(-medv, lstat, rm))
+baseline= X_pred %>% mean()
+sviz = shapviz(shap, 
+               X_pred = X_pred,
+               baseline = baseline)
+```
+
+Slick plots.
+<a name="Figure3"/>
+```{r fig.height=10, fig.width=12}
+wrap_plots(ncol=2,
+           sviz %>% sv_importance(show_numbers=TRUE),
+           sviz %>% sv_importance(kind="beeswarm")
+)
+```
+
+Interpreting Shapley values is a whole story. You have to read [Molnar, 2025](#r1) on Shapley values. 
+
+The mean ones on the left function kind of like variable importances. The individual ones in the right-hand plot show how the variable contributes to the individual observation predictions. You can see that `lstat` produces a big swing in `medv` from positive to negative, in line with its large importance.
+
+Another often-used plots is a waterfall plot. This by default plots the effect on a single observation (the first one). You can aggregate observations and then you get the mean effects.
+```{r}
+sviz %>% sv_waterfall() + labs(title="Waterfall")
+sviz %>% sv_waterfall(row_id = 2:3)
+```
+
+Shapley importances may be harder to explain than the black-box model itself. I can say this with some confidence, since I wrote my dissertation on cooperative games, including the Shapley Value concept.
+
+# Surrogate Model
+We build a RuleFit type surrogate decision tree model using the `pre` package. See [Friedman and Popescu (2008)](#r3) for information on RuleFit surrogates.
+```{r}
+pre_model <- pre(medv ~ ., data = train_data, 
+                 family = "gaussian", ntrees = 100)
+```
+
+Plot a summary of the prediction rule ensemble model. In tree construction randomness is used. We plot only the first 9 terms and exclude linear effects.
+
+<a name="Figure4"/>
+```{r fig.height=10, fig.width=12}
+plot(pre_model, nterms=9, linear.terms=FALSE)
+```
+
+Most important rules:
+```{r}
+pre::importance(pre_model, plot=F)$baseimps %>% head(6)
+```
+
+Retrieve the importances and make a vip graph.
+```{r}
+pre::importance(pre_model) #graph
+```
+
+Make predictions on `test_data`:
+```{r}
+xg_predictions <- predict(xg_fit, new_data = test_data) %>% 
+  pull(.pred)
+pre_predictions <- predict(pre_model, newdata = test_data)
+```
+
+Calculate r-squared and rmse for the `xgboost` model and the `pre` model.
+```{r}
+xg_rsq <- yardstick::rsq_vec(test_data$medv, xg_predictions)
+pre_rsq <- yardstick::rsq_vec(test_data$medv, pre_predictions)
+xg_rmse <- yardstick::rmse_vec(test_data$medv, xg_predictions)
+pre_rmse <- yardstick::rmse_vec(test_data$medv, pre_predictions)
+
+tibble( model = c("xgboost","pre"),
+        rsq = c(xg_rsq, pre_rsq),
+        rmse = c(xg_rmse, pre_rmse))
+```
+
+The pre surrogate explained about 86% of the variation in the black-box model predictions. But already that was explaining only 89% of the variation.
+
+So is the `pre` rule set a good explainer for the real `xgboost` model?
+
+# Conclusion
+We used `tidymodels` to model the `Boston` dataset predicting `medv` from the other variables. We tried an `xgboost` black-box model with default tuning.
+
+On the way we found the importance of variables in the `xgboost`, with `lstat`and `rm` being most important. We made variable importance plots side by side. Figure 1 shows the [comparison of Variable Importance for the two models](#Figure1). Figure 2 shows [partial dependence plots](#Figure2) for `lstat` and `rm`. 
+
+We also produced SHAP importances, both mean and individual. While they are more complicated to explain than the black-box model itself, they have the advantage of guaranteeing fairness of spreading the contributions of the variables.  Figure 3 shows [SHAP importances](#Figure3)
+
+Finally we prepared a surrogate model with `pre` in the form of a small decision tree. It is kind of easy to explain and captures about 87% of what the black-box predicted. We can see [the decision trees](#Figure4) in Figure 4.
+
+# References
+:::{#r1}
+ChatGPT (2025) Model the Boston dataset with parsnip linear model and random forest. Retrieved 10/6/2025 from (https://chatgpt.com/c/68e41538-5894-8332-aeea-7ab0a0fd7b08)
+
+:::{#r2}
+Molnar, C. (2025).  Interpretable Machine Learning:
+A Guide for Making Black Box Models Explainable (3rd ed.).  christophm.github.io/interpretable-ml-book/ Shapley Values. Chapter 17,
+ Retrieved online on 10/7/2025 from (https://christophm.github.io/interpretable-ml-book/pdp.html)
+ 
+:::{#r3}
+Friedman and Popescu (2008). “Predictive learning via rule ensembles.” Ann. Appl. Stat. 2 (3) 916- 954, September 2008 (http://doi.org/10.1214/07-AOAS148) 
+
+:::{#r4}
+Tidymodels `parsnip` 1.6.1 (ongoing) Boosted trees via xgboost. Retrieved online on 10/11/2026 from (https://parsnip.tidymodels.org/reference/details_boost_tree_xgboost.html)

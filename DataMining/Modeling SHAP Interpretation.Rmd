@@ -1,0 +1,226 @@
+---
+title: Modeling SHAP Interpretation
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-10 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present SHAP interpretability, using a linear model(!) and the `vip` package.
+---
+
+# Introduction
+We will demonstrate SHAP variable importances using the `fastshap` package which is employed by `vip`. We use a linear model, introduce permutation importances, and then show how to compute SHAP importances.  
+
+# Status of SHAP
+SHAP importances are becoming used often, because of their pseudo-justification with mathematical 'explanations' from cooperative game theory. But calculating full SHAP importances with all subsets of the drivers is prohibitively slow on any computer, an exponentially hard problem. 
+
+Therefore in `fastshap` a sampling method is used to approximate the exact solution. It too takes a while to run. But it's fast enough for using as a subset of R modeling. However, because of the sampling randomness, you can get different answers.
+
+# Packages
+As usual, we have some standard packages. The `vip` package computes variable importance for many different model types.
+
+```{r}
+library(ISLR2)
+library(mbadtools) # some extra ggplot functions
+```
+
+# Data
+We'll use the `Boston` dataset from the `ISLR2` package. There are 13 drivers and one target. 
+```{r}
+data("Boston")
+Boston
+```
+
+# Linear model
+Make a linear model. Ha, because a linear model is by nature explainable. 
+```{r}
+LM = lm(medv ~ ., data = Boston)
+```
+
+Create a predict function matching the requirement for the variable importance computations. the form of the function must match the requirements of the importance computation technique, here `vip` package.
+```{r}
+pfun = function (object, newdata) {
+    predict(object, newdata=newdata)
+}
+```
+
+What metrics are available?
+```{r}
+list_metrics()
+```
+
+We could use any of the last three for a linear continuous model. We choose 'mape' here, mean absolute percent error.
+
+# Permutation Importance
+Permutation importance is the most accepted form. `lm()` does not compute permutation importances.  The `ranger` random forest routine already does permutation importance.
+
+Computing permutation importance requires randomness; we set the seed for reproducibility. `vip` will compute this for us. We generate it for both `chas=0` and `chas=1`, i.e. inland properties vs. riverfront.
+
+```{r}
+set.seed(852)
+list(
+  vi_permute(LM, train=Boston[Boston$chas==0,], target='medv', 
+           metric='mape', pred_wrapper= pfun,
+           nsim=30) %>% 
+    gg_vip(width=.7) + labs(subtitle = "chas==0")
+  ,
+  vi_permute(LM, train=Boston[Boston$chas==1,], target='medv', 
+           metric='mape', pred_wrapper= pfun,
+           nsim=30) %>% 
+    gg_vip(width=.7) + labs(subtitle = "chas==1")
+) %>% wrap_plots(ncol=2, guides='collect')
+```
+`lstat` is most important for both, but for inland properties `dis` and `tax` are next, while for riverfront, `nox` and `rm` are next.
+
+# Importances for linear models
+Standard variable importance for a linear model is commonly measured using the **absolute value of the $t$-statistic** ($\vert{}t\vert{}$). Standard machine learning tools (such as R's `caret` package) use this exact metric by default for linear models.
+
+Thanks to Gemini, here is how it works, why it is used, and how it relates to alternative methods
+
+## Why the $t$-Statistic Works
+
+For a predictor coefficient $\hat{\beta}_j$ with standard error $SE(\hat{\beta}_j)$, the $t$-statistic is calculated as:
+
+$$t_j = \frac{\hat{\beta}_j}{SE(\hat{\beta}_j)}$$
+
+* **Scale Invariance:** Raw regression coefficients ($\hat{\beta}_j$) depend heavily on the scale of the feature. For example, changing a feature's unit from meters to millimeters shrinks $\hat{\beta}_j$ by 1,000, even though its true predictive value remains unchanged.
+* **Accounting for Uncertainty:** Standard error $SE(\hat{\beta}_j)$ incorporates both feature variance and collinearity with other variables. Dividing $\hat{\beta}_j$ by $SE(\hat{\beta}_j)$ normalizes for scale and measures how many standard deviations the coefficient is away from zero.
+* **Higher $\vert{}t\vert{}$ = Higher Importance:** A larger absolute $t$-statistic indicates stronger statistical evidence that the predictor's true effect is non-zero in the presence of the other features.
+
+## Alternative Relative Importance Methods
+While the $\vert{}t\vert{}$-statistic evaluates a variable's contribution conditioned on all other variables in the model, other popular approaches include:
+
+1. **Standardized Coefficients ($\vert{}\beta^*\vert{}$):**
+* If all features are centered and scaled (mean 0, variance 1) prior to fitting, the magnitude of raw coefficients $\vert{}\beta^*\vert{}$ directly reflects feature importance.
+* On standardized data, relative $\vert{}t\vert{}$-statistics closely track relative $\vert{}\beta^*\vert{}$ magnitudes when predictors have similar residual variances.
+
+2. **Partial $R^2$ / Drop-in-Deviance:**
+* Measures how much the model's total variance explained ($R^2$) drops when a specific predictor is removed.
+* In a single-variable drop test, the partial $F$-statistic is mathematically equal to the square of the $t$-statistic ($F = t^2$).
+
+3. **Relative Variance Decomposition (e.g., LMG method):**
+* Computes the average marginal contribution of a variable across all possible sub-models. This is useful when features are strongly collinear, as high multicollinearity inflates $SE(\hat{\beta}_j)$ and depresses individual $t$-statistics.
+
+# SHAP Importance
+An alternative is SHAP importance. SHAP importances are becoming used often, because of their pseudo-justification with mathematical 'explanations' from cooperative game theory.
+
+# SHAP Computation
+Here's how to do SHAP importance for the linear model. We need a seed for reproducibility, but computing SHAP scores uses randomization. The `fastshap` package is needed to compute the SHAP ratings. It is included with `vip`.
+
+Or it can be installed from r-universe using `pak`: 'pak::pak("bgreenwell/fastshap@main")'.
+
+First we look at how linear regression does with the two classes of `chas`; riverfront (1) or not (0). We use the `vip` version of SHAP computations.
+
+```{r}
+set.seed(853)
+list(
+  vi_shap(LM, train=Boston[Boston$chas==0,], 
+        pred_wrapper= pfun,
+        nsim=30) %>%
+    gg_vip(width=.7) + labs(subtitle = "chas==0")
+  ,
+  vi_shap(LM, train=Boston[Boston$chas==1,], 
+        pred_wrapper= pfun,
+        nsim=30) %>%
+    gg_vip(width=.7) + labs(subtitle = "chas==1")
+) %>% wrap_plots(ncol=2, guides = 'collect')
+```
+
+`lstat` is most important always. `nox` and `rm` and `rad` are important near the Charles River; `dis` replaces `nox` as important elsewhere.
+
+Next we look at the top 1% of `medv` vs bottom 99%. Megamansions!
+```{r}
+(top01=Boston %>% filter(medv >= quantile(Boston$medv, .99)))
+(bot99=Boston %>% filter(medv < quantile(Boston$medv, .99)))
+```
+
+```{r}
+set.seed(854)
+list(
+  vi_shap(LM, train=top01, target='medv', 
+           metric='mape', pred_wrapper= pfun,
+           nsim=30) %>% 
+    gg_vip() + labs(subtitle = "top 1% medv")
+  ,
+  vi_shap(LM, train=bot99, target='medv', 
+           metric='mape', pred_wrapper= pfun,
+           nsim=30) %>% 
+    gg_vip() + labs(subtitle = "bottom 99% medv")
+) %>% wrap_plots(ncol=2, guides='collect')
+```
+This plot shows only `rm` and `ptratio` and `rad` matter for the 1%, whereas the balance have `lstat, dis, rad`.
+
+Run with a different seed to see how sensitive the results are; remember computing SHAP importances is a very random process.
+
+```{r}
+set.seed(855)
+list(
+  vi_shap(LM, train=top01, 
+        pred_wrapper= pfun,
+        nsim=30) %>%
+    gg_vip() + labs(subtitle = "top 1%")
+  ,
+  vi_shap(LM, train=bot99, 
+        pred_wrapper= pfun,
+        nsim=30) %>%
+    gg_vip() + labs(subtitle = "bottom 99%")
+) %>% wrap_plots(ncol=2, guides='collect')
+```
+
+# Conclusion
+Your SHAP variable importance calculations may need even more interpretation than the original model!
+
+# tl;dr - SHAP and Cooperative Game Theory
+In cooperative game theory, we deal with subsets of 'players'.  For SHAP, the 'players' are the drivers in the model, and the subsets represent different combinations of these variables contributing to the model's predictions. 
+
+Each subset $A$ has a 'value' $v(A)$.  Think of it as kind of an r-squared. You can easily see that when $A, B$ are two subsets, then $A \cup B$ is a third one.  And each has a value.  Cooperation could be beneficial when 
+$$ v(A\cup B) \geq v(A)+ v(B) $$
+but this might not always be true. Putting two sets of features together in a model might not generate as much value as each set separately. (They might be negatively correlated, for instance.)
+
+A lot of mathematical work has gone into finding out how much weight (importance) to assign to each feature or player, so that the total weight adds up to the value of the entire coalition of features, say the r-squared or same such measure.  
+
+One of these is called the Shapley value. It's named after a famous 1950's mathematician, Lloyd Shapley. He happens to be portrayed, in the movie *A Beautiful Mind*, as a sidekick of John Nash at Princeton. Lloyd Shapley won the Nobel Prize in Economics in 2012, after John Nash in 1994. Shapley's  father was a famous astronomer, [Harlow Shapley](#r6), who among other things served as head of the Harvard College Observatory from 1921–1952. 
+
+When you consider all possible subsets of the drivers, the contribution of each driver to the model's predictions can be approximated using the Shapley value. Its computation involves averaging the marginal contributions of each driver being added to a subset that doesn't have it compared to the subset without it. The Shapley value weights every subset equally. 
+
+The Shapley value may ensure that each driver's contribution is (more or less) fairly attributed based on its marginal impact across all possible combinations. 
+
+There are other definitions of fairness. See below about the **core**.
+
+See [Exploratory Model Analysis](#r4), Section 8.2 for a mathematical summary.
+
+Nice properties of the Shapley value in game theory:
+
+- Symmetry: It is symmetric, meaning that the Shapley value of a driver does not depend on the order in which drivers are added to the subset.
+- Additivity or Linearity: It is linear, allowing for the decomposition of contributions across different models or datasets.
+- Local Accuracy or Efficiency: the sum of all Shapley values equals the total difference between the model's prediction and the average prediction.
+- Dummy Property: It is null player proof, meaning that a driver with no impact on the model's predictions will have a Shapley value of zero.
+
+However, the exact computation of Shapley values is often approximated using Monte Carlo methods. But then there is no guarantee that the properties apply! We can enforce Efficiency but not the others.
+
+There are also limitations. The Shapley value is not always in the **core** of a game, the set of allocations such that no subset of features will want to leave the grand coalition. This is an issue, since true fairness only happens when no group can do better by dropping out.
+
+So the method is kind of esoteric. It's as hard to explain as the original 'black-box' model was!  Funny that it should gain currency for modern model explanations.
+
+# References
+:::{#r1}
+ChatGPT (2025) Model the Boston dataset with parsnip linear model and random forest. Retrieved 10/6/2025 from (https://chatgpt.com/c/68e41538-5894-8332-aeea-7ab0a0fd7b08)
+
+:::{#r2}
+Molnar, C. (n.d.) Partial Dependence Plots. Chapter 19, Interpretable Machine Learning, 3rd edition, continuously updated. Retrieved online on 10/7/2025 from (https://christophm.github.io/interpretable-ml-book/pdp.html)
+
+:::{#r3}
+Hartman, B. (2026) Modeling Workflow Techniques. 
+
+:::{#r4}
+Biecek, P. and Burzykowski, T. (2020) Exploratory Model Analysis. (https://ema.drwhy.ai/)
+
+:::{#r6}
+Wikipedia contributors. (2026, October 4). Harlow Shapley. In Wikipedia, The Free Encyclopedia. Retrieved 12:43, October 8, 2026, from (https://en.wikipedia.org/w/index.php?title=Harlow_Shapley&oldid=1378505250)
+

@@ -1,0 +1,220 @@
+---
+title: "Modeling with catboost"
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-29
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    theme: readable
+    highlight: tango
+abstract: |
+  We experiment with the `catboost` package, which models both categorical and numeric variables without funky manipulations of parameters. 
+---
+
+# Introduction
+Gradient boosting on decision trees is a form of machine learning that works by progressively training more complex models to maximize the accuracy of predictions. Gradient boosting is particularly useful for predictive models that analyze ordered (continuous) data and categorical data. Credit score prediction which contains numerical features (age and salary) and categorical features (occupation) is one such example.
+
+Gradient boosting benefits from training on huge datasets. In addition, the technique is efficiently accelerated using GPUs. A large part of the production models at [Yandex](https://en.wikipedia.org/wiki/Yandex) are trained on GPUs so we wanted to share more insights on our expertise in this area.
+
+# Packages
+```{r message=FALSE, warning=FALSE}
+library(ISLR2)
+library(bonsai)
+library(catboost)
+library(xgboost)
+library(mbadtools)
+# prefer `dplyr` for conflicts
+conflicted::conflict_prefer_matching("select|filter", "dplyr", quiet=TRUE)
+# advanced modeling
+library(tidymodels)
+# interpretation
+source("gg_interpret.R")
+```
+
+# Data
+```{r}
+data(Boston, package="ISLR2")
+Boston %>% skim_without_charts()
+```
+
+# Validation Setup
+```{r}
+set.seed(1353)
+boston_split <- initial_split(Boston, prop = 3/4, strata = medv)
+boston_train_data <- training(boston_split)
+boston_test_data <- testing(boston_split)
+```
+
+# Model with `catboost`
+```{r}
+cat_spec <-
+  boost_tree(trees = 500, learn_rate = 0.05) |>
+  set_engine("catboost") |>
+  set_mode("regression")
+```
+
+Boston model
+```{r}
+boston_fit <- fit(cat_spec, medv ~ ., data = boston_train_data)
+boston_fit
+```
+
+```{r}
+# make cat predictions
+boston_pred = predict(boston_fit, new_data=boston_test_data)
+# boston_pred %>% glimpse
+# create an 'ugmented' prediction set
+boston_aug = data.frame(boston_test_data, 
+                        .estimate = boston_pred$.pred ) %>% 
+  mutate(.resid = medv -.estimate, .std.resid = c(scale(.resid)))
+# show first 10 
+boston_aug %>% slice(1:10) %>% knitr::kable(digits=3)
+```
+# Model with `xgboost`
+
+```{r}
+xgb_spec <-
+  boost_tree(trees = 500, learn_rate = 0.05) |>
+  set_engine("xgboost") |>
+  set_mode("regression")
+
+boston_xgb_fit <- fit(xgb_spec, medv ~ ., data = boston_train_data)
+```
+
+```{r}
+# predictions
+boston_xgb_pred = predict(boston_xgb_fit, new_data=boston_test_data)
+# boston_xgb_pred %>% glimpse
+# augment
+boston_xgb_aug = data.frame(boston_test_data, 
+                        .estimate = boston_xgb_pred$.pred ) %>% 
+  mutate(.resid = medv -.estimate, .std.resid = c(scale(.resid)))
+# show results
+boston_xgb_aug %>% slice(1:10) %>% knitr::kable(digits=3)
+```
+# Model with `lm`
+```{r}
+lin_spec <-
+  linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+boston_lin_fit <- fit(lin_spec, medv ~ ., data = boston_train_data)
+
+# predictions
+boston_lin_pred = predict(boston_lin_fit, new_data=boston_test_data)
+# boston_lin_pred %>% glimpse
+# augment
+boston_lin_aug = data.frame(boston_test_data, 
+                        .estimate = boston_lin_pred$.pred ) %>% 
+  mutate(.resid = medv - .estimate, 
+         .std.resid = c(scale(.resid)))
+# display
+boston_lin_aug %>% slice(1:10) %>% knitr::kable(digits=3)
+```
+
+# Metrics
+```{r}
+list(
+  boston_aug %>% 
+    metrics(truth = medv, estimate=.estimate) %>%
+    gt() %>% tab_header(title="catboost") %>% wrap_table(),
+  boston_xgb_aug %>% 
+    metrics(truth = medv, estimate=.estimate) %>%
+    gt() %>% tab_header(title="xgboost") %>% wrap_table(),
+  boston_lin_aug %>% 
+    metrics(truth = medv, estimate=.estimate) %>%
+    gt() %>% tab_header(title="linear") %>% wrap_table()
+) %>% wrap_plots()
+```
+
+`catboost` gives the best estimate, by all three metrics.
+
+# YVP
+
+```{r}
+list(
+  boston_aug %>% ggplot() +
+  geom_point(aes(medv, .estimate, color="cat"), shape=0, size=4)+
+  geom_point(data=boston_xgb_aug,
+             aes(medv, .estimate, color="xgb"), shape=1, size=4)+
+  geom_point(dat=boston_lin_aug,
+             aes(medv, .estimate, color="lin"), shape=2, size=4) +
+  geom_abline(slope=1, intercept=0, color="red", 
+              linetype="dashed", linewidth=1.3) +
+  labs(title="YVP for three Models",
+       color="Model")+
+  theme_bw()
+) %>% wrap_plots()
+```
+
+# Conclusion
+
+In a parsnip workflow `catboost` gives the best predictions. 
+
+Why?
+
+
+# References
+:::{#r1}
+Emil Hvitfeldt (2026) CatBoost support in `tidymodels`. Posit Blog, Jun 25, 2026. Retrieved 8/29/2026 from [Hvitfeldt, 2026](https://opensource.posit.co/blog/2026-06-25_catboost-tidymodels/)
+
+:::{#r2}
+CatBoost (2018) CatBoost is a high-performance open source library for gradient boosting on decision trees. [Catboost.ai website](https://catboost.ai/), December 18, 2018.  Accessed on 9/4/2026 at  (https://catboost.ai/news/catboost-enables-fast-gradient-boosting-on-decision-trees-using-gpus)
+:::
+
+# Feature Importance
+Grab the average importances. For `catboost` we need to extract them from the fit object. For the others we can just use `vip::vi()`. The default is permutation importances.
+```{r}
+VI_cat = boston_fit$fit$feature_importances %>% as.data.frame()
+VI_cat %<>% rownames_to_column(var="Variable")
+VI_cat %<>% rename(Importance=V1)
+
+VI_xgb = vip::vi(boston_xgb_fit)
+VI_lin = vip::vi(boston_lin_fit)
+```
+
+Make the plots for comparison.
+```{r}
+list(
+  VI_cat %>% gg_vip() + labs(title="catboost"),
+  VI_xgb %>% gg_vip() + labs(title="xgboost"),
+  VI_lin %>% gg_vip() + labs(title="linear")
+) %>% wrap_plots(ncol=2) & theme(legend.position="none")
+```
+
+# Individual importance
+The `lime` package is handy for this and makes nice graphs.
+```{r warning=FALSE}
+library(lime)
+# pick an observation -- no 15
+boston_obs = boston_test_data %>% slice(15)
+boston_obs %>% knitr::kable(digits=3, caption = "Boston observation 15")
+
+# Create an 'explainer' object using your training data and fitted model
+explainer_cat <- lime(boston_train_data, boston_fit)
+explainer_xgb <- lime(boston_train_data, boston_xgb_fit)
+explainer_lin <- lime(boston_train_data, boston_lin_fit)
+# Generate the explanation
+explanation_cat <- lime::explain(boston_obs, explainer_cat, 
+                                 n_features = 5)
+explanation_xgb <- lime::explain(boston_obs, explainer_xgb, 
+                                 n_features = 5)
+explanation_lin <- lime::explain(boston_obs, explainer_lin, 
+                                 n_features = 5)
+```
+
+
+```{r fig.height=8, fig.width=12, warning=FALSE}
+# Plot the local explanation
+list(plot_features(explanation_cat)+ labs(title="catboost"),
+      plot_features(explanation_xgb)+ labs(title="xgboost"),
+      plot_features(explanation_lin)+ labs(title="linear")
+) %>% wrap_plots(ncol=2) & theme(legend.position="none")
+```
+
+
+
