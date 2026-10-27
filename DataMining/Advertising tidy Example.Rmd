@@ -1,0 +1,181 @@
+---
+title: Advertising tidy Example
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-02 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_float: TRUE
+    theme: united
+    highlight: tango
+abstract: |
+  We analyze the Advertising data from Chapter 2 of [ISLR](#r1), in an R Notebook using tidy code techniques. 
+---
+
+# Introduction
+We repeat the analysis in [Hartman, 2026](#r3) but using `tidymodels` modeling methods. This illustrates the data mining process flow.
+
+# Packages
+As usual, we have some standard packages. 
+```{r}
+library(ISLR2)
+if(!("mbadtools" %in% installed.packages()))  pak::pak("bhartman2/mbadtools")
+library(mbadtools) # course packages including tidyverse and tidymodels
+```
+
+# `tidymodels` Version
+`tidymodels` is a new way of modeling that captures the essence of the data mining process and makes it easier to follow. It follows a standard data mining workflow process.
+
+![Source: [Biecek and Burzykowski](#r2), fig.2.1](https://ema.drwhy.ai/figure/MDP_washmachine.png)
+
+# Data (Acquisition)
+```{r message=FALSE}
+# load the Advertising.csv data -------------
+# using Import Dataset
+# I moved the file into my project folder so it would be easy to find. 
+library(readr)
+Advertising <- read_csv("Advertising.csv")
+Advertising = Advertising %>% rename(Market=`...1`)
+Advertising %>% skim
+```
+# Research Problem
+The problem we will investigate is whether we can try to predict `Sales` from the amounts of spending on three advertising media; `TV`, `Radio`, and `Newspaper`. Is there a simple model that can help us guess what sales we will get if we compile an advertising budget? 
+
+# Data Prep (Cleaning)
+Little is needed here. 
+
+# Validation (Design)
+Before we start guessing models, we need to design our experiment. 
+
+`tidymodels` encourages you to prepare your data using cross-validation strategies.  
+
+Why? We can think of a model as being _trained_ on the data used to run it. But naturally a model will do the best on the data it was trained on, so it's not necessarily the best way to ensure _robustness_, the ability of a model to make predictions on new data. Cross-validation allows us to train the model on certain data and see how it does on new data.
+
+Here's a `tidy` way to set up for more robust evaluation of a model. 
+
+Split the data into training and testing sets. 
+
+We may also need _folds_ to create more robust models or to tune parameters of models. There's randomization in selecting the data, so we set a seed for reproducibility if you run it. We will use the folds, but not the split, in this notebook.
+```{r}
+set.seed(123)
+ad_split <- initial_split(Advertising, prop = 0.8, strata = Sales)
+ad_train_data <- training(ad_split)
+ad_test_data <- testing(ad_split)
+ad_folds <- vfold_cv(Advertising, 10)
+```
+
+# Recipes (Variable Selection and Engineering)
+Recipes tell us what the formula of the model is. The 'data' argument is not binding, it just needs to contain the column names in the formula. You can also tailor or transform the data by providing steps.
+
+```{r}
+ad_recipe_1 = recipe(Sales ~ ., data=Advertising) %>% 
+  step_rm(Market)
+ad_recipe_2 = recipe(Sales ~ TV + Radio, data=Advertising)
+ad_recipe_TV = recipe(Sales ~ TV, data=Advertising)
+ad_recipe_Radio = recipe(Sales ~ Radio, data=Advertising)
+```
+
+Recipes also can be used to modify the data, only necessary here in the first recipe, to replicate what we did before. More later on that.
+ 
+# Specs (Assembly)
+Specs tell us what modeling tools we will use, here linear models using the `lm` engine.
+```{r}
+lm_spec <- linear_reg() %>% 
+  set_engine("lm") %>% 
+  set_mode("regression") %>% # not strictly required because `lm` does only regression
+  translate() # translates fitted results to standard `lm` format
+```
+
+# Workflow Set (Benchmark)
+```{r}
+ad_workflow_set <-
+  workflow_set(
+    preproc = list(full = ad_recipe_1,
+                   two = ad_recipe_2,
+                   TV = ad_recipe_TV,
+                   Radio = ad_recipe_Radio),
+    models = list(lin = lm_spec),
+    cross = FALSE # we have only one model and four recipes
+  )
+ad_workflow_set
+```
+
+# Train (Benchmark)
+```{r}
+tictoc::tic() # start clock for run time
+ad_workflow_results <-
+  ad_workflow_set |>
+  # The first argument is a function name from the {{tune}} package
+  # such as `tune_grid()`, `fit_resamples()`, etc.
+  workflow_map("fit_resamples", 
+                resamples = ad_folds, # do 10-fold CV
+                metrics = metric_set(rsq, rmse, mape),
+                verbose = TRUE
+  )
+tictoc::toc() # stop run time clock and print run time
+ad_workflow_results
+```
+
+# Metrics (audit)
+How will we evaluate the performance of the models we have tried? We will use `mape, rmse, rsq`, three typical measures for regression.
+
+Collect the 3 metrics' means (over all 10 resamples) for 4 models- a total of 12 lines.
+```{r}
+collect_metrics(ad_workflow_results)
+```
+
+If we like `rmse` as the metric of choice, filter the results.
+```{r}
+collect_metrics(ad_workflow_results) %>% 
+  filter(.metric == "rmse") %>% 
+  select(-.config, -preproc, -model, -.estimator) # remove redundant cols
+```
+
+# Evaluate (Audit)
+By the `rmse` criterion, the `two_lin` regression model did the best for the average of the 10 CV resampling runs. That gives us confidence in the model's ability to predict on a new advertising data set. 
+
+We don't need `Newspaper` amounts, only `TV` and `Radio` amounts.
+
+# Finalize (Deliver)
+To see the final best model, extract the winning model and fit it on the whole dataset advertising.
+```{r}
+# finalize winning model on whole dataset with fit()
+two_lin_wflow_fit <- ad_workflow_set %>% 
+  extract_workflow(id = "two_lin") %>% 
+  fit(data = Advertising)
+```
+
+Display model.
+```{r}
+# Extract the base 'lm' fit object
+two_lin_lm_obj <- two_lin_wflow_fit %>% extract_fit_engine()
+```
+
+View coefficients. 
+<a name="t2"/>
+```{r}
+two_lin_lm_obj %>% tidy()
+two_lin_lm_obj %>% glance()
+```
+
+Plot the residuals and YVP using the `mbadtools` function
+```{r}
+two_lin_lm_obj %>% gg_residual_plots()
+# Plot YVP
+two_lin_lm_obj %>% gg_residual_plots(items=8)
+```
+
+# Discussion
+We get [here](#t2) the exact results we got before without `tidy` modeling methods.
+
+# References
+::: {#r1}
+1. ISLR (2013), Chapter 2 Statistical Learning, page 15.
+
+:::{#r2}
+2. Biecek, P. and Burzykowski, T. (2020) Exploratory Model Analysis. (https://ema.drwhy.ai/)
+
+:::{#r3} 
+3. Hartman, B. (2026) Advertising Example Notebook. Canvas,  [Advertising-Example-Notebook.nb.html](Advertising-Example-Notebook.nb.html)
