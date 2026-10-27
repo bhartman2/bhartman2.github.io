@@ -1,0 +1,70 @@
+---
+title: Ch03 6_4 Boston
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-06 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We follow Chapter 3 lab Section 6.4 of [ISLR](#r1), in an R Notebook using modern tidyverse methods, performing a simple regression on the `Boston` dataset with interaction terms.
+---
+
+# Introduction {-}
+We deal with regression and analysis of the `Boston` dataset from the `ISLR2` package, focusing on a simple regression, of target `medv` on driver `lstat` with interactions. We run the regression, interpret it and look at residuals. We will follow [the ISLR textbook](#r1), Chapter 3.
+
+# Packages {-}
+We make the `mbadtools` required packages available, and also load the `ISLR2` package for data.
+```{r}
+library(ISLR2) # for the course data
+# load github packages
+library(mbadtools, quietly = TRUE)
+``` 
+
+# Data {-}
+We have seen this before.
+```{r}
+data(Boston)
+Boston %>% skim
+```
+
+# Regression {-}
+We will run a regression with interactions of `medv` on `lstat` and `age`, using the `lm()` function to do it. We will also use the `broom` package to tidy up the output, and the `ggplot2` package for plotting. The `gt_add_significance()` function produces a nicely formatted table with significant p-values colored to be seen easily. Notice the * between `lstat` and `age` which adds the interactions.
+
+```{r}
+lm.fitint=lm(medv~lstat*age,data=Boston)
+lm.fitint %>% summary()
+lm.fitint %>% glance %>% gt_add_significance()  %>% fmt_number()
+lm.fitint %>% tidy(conf.int=TRUE) %>% gt_add_significance() %>% fmt_number()
+```
+
+Residuals are always important.
+```{r}
+lm.fitint %>% gg_residual_plots()
+```
+Big curves in the RF and SL plots, and QQ is off line at top end above 1 sd.
+
+# Only the interaction
+```{r}
+lm.fitint1=lm(medv ~ lstat + lstat:age,data=Boston)
+lm.fitint1 %>% summary()
+lm.fitint1 %>% glance %>% gt_add_significance()  %>% fmt_number()
+lm.fitint1 %>% tidy(conf.int=TRUE) %>% gt_add_significance() %>% fmt_number()
+```
+
+```{r}
+lm.fitint1 %>% gg_residual_plots()
+```
+Still some problems.
+
+# Conclusion
+We ran a regression of `medv` using `Boston` data with an interaction term. And we did the same with only `lstat` and the interaction with `age`.
+
+# References {-}
+::: {#r1}
+1. ISLR (2013) Chapter 3 Section 3.6.2 Simple Linear Regression, page 110ff.

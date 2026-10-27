@@ -1,0 +1,367 @@
+---
+title: Ch03 Lab tidy Boston Linear vs AI
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-07  Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+abstract: |
+  We discuss the `Boston` dataset, comparing a neural network model to a linear model, using `tidymodels` workflow methods
+---
+
+# Introduction
+
+The purpose of this Notebook is to present a multiple linear regression and compare it to a neural network AI method. We will use the famous Boston dataset on housing median values in localities in the Boston MA area of the USA, which is found in the `ISLR2` package. Our study here is a lot like what Zillow does daily or weekly to build a model that will allow you to get an estimate of your home's value.  So this is a meaningful commercial problem.
+
+Will an artificial intelligence (AI) or machine learning (ML) routine do better? We will try a neural network using `nnet` and a decision tree using `rpart`.
+
+# Packages
+
+First it is necessary to load the packages we need. The `nnet` package is one of many that can be used to build neural network models, often called artificial neural networks (ANNs), or referred to as 'Deep Learning'. It's supported in `parsnip` workflows.
+
+```{r}
+library(ISLR2) # package contains the data files
+library(nnet) # for neural network models
+library(rpart) # for decision tree
+library(mbadtools, quietly=TRUE) # course meta-package
+```
+
+# Data
+Next we get the data in, and look it over.
+```{r}
+data(Boston)
+Boston
+```
+
+```{r}
+Boston %>% skim
+```
+
+There are 506 rows and 14 columns. Our target is the column `medv`, the median value of owner-occupied homes in thousands of dollars.  The other 13 columns are possible drivers of the housing price.  Reading their descriptions in the help, we can easily see that most of them might have some impact. Being naive data scientists, we don't have any special insights into which would be more important. 
+
+There are no missing values, but one variable `chas` seems to have only 0 and 1 as values.
+
+# Research Problem
+We want to compare some different models for predicting `medv`, the median housing price in a neighborhood, from the other 13 variables.
+
+- a linear model using `lm`
+- a neural network model using `nnet` 
+- a decision tree using `rpart`
+
+# Workflow with `tidymodels`
+We follow a `tidymodels` (sometimes called `parsnip`, since that's the workflow package) workflow setup. There are 5 steps.  For more information you can look at the example in [Workflow Multiple Models](#)
+
+1. Data Preparation - define training and test data; set up cross-validation folds for parameter tuning.
+2. Recipes - define the formula and the dataset, and do a bit of standardized data management.
+3. Models - define the models and parameter sets we want to use; some of our models may require 'tuning', choosing the optimal set of parameters; this part will use cross-validation.
+4. Workflow Set - define the workflows we want to run
+5. Metrics - collect the metrics we want to use to compare models
+6. Comparison - compare the metrics to pick the best model (picking the best is a human task, but computing the metrics is the computer's job)
+7. Finalize - run the chosen model on all the data and see the predictions and metrics.
+8. Predict - make predictions on the test data using the final model, and evaluate the results.
+
+# Data Design
+We perform a split of the data into training and test datasets. We use an 80-20 split performed with the `rsample` package in `tidymodels`. This is for training our model on one set of data and evaluating it on the test data.
+
+We also create crossvalidation __folds__ on our training data so that we can try or 'tune' the AI models on different sets of parameters. 
+
+`tidymodels` makes this easy. We set the seed so you can reproduce the results here.
+
+```{r}
+set.seed(2026)
+# split data 80/20
+split <- initial_split(Boston, prop = 0.8, strata = medv)  # `medv` is the outcome
+train_data <- training(split) # training data
+test_data  <- testing(split) # testing data
+# create folds for tuning, 5 is enough
+folds      <- vfold_cv(train_data, v = 5) 
+```
+
+# Recipes
+First we create a basic recipe with the formula and data. Then we wrangle the data a bit to make different options.
+
+Most models don't do well with predictors that have nearly zero variance, that is, they are almost all one value. We could set the 'freq-cut' for this to something other than the default 95/5.  
+
+Since most AI models like normalized (scaled and centered to mean 0 and standard deviation 1) data we create a second recipe normalizing the numeric predictors.
+```{r}
+rec_basic <- recipe(medv ~ ., data = train_data) %>% 
+  step_nzv(all_predictors())
+
+rec_normalized <- recipe(medv ~ ., data = train_data) %>% 
+  step_normalize(all_numeric_predictors())
+```
+
+# Models
+We specify our three models here. 
+
+## Linear
+We use the `lm` engine for linear.
+```{r}
+linear_spec <- linear_reg() %>%
+  set_engine("lm")
+linear_spec
+```
+
+The other models use bagging, a kind of randomization. `baguette` is needed for bagging methods.
+```{r}
+library(baguette) # needed for bagging 
+```
+
+## Neural Net
+Neural net uses the `nnet` engine in regression mode. We are going to tune the parameters using our folds and a grid of possible parameter values. The `bag_mlp` parameters are 'penalty' and 'hidden_units'; see the function help for what they mean. We will also create a grid of value pairs for the parameters.
+```{r}
+bag_nn_spec <- bag_mlp(penalty = tune(), 
+                       hidden_units = tune()
+                       ) %>% 
+  set_engine("nnet") %>% 
+  set_mode("regression") %>% 
+  translate()
+bag_nn_spec
+
+# Create a grid using dials functions (grid_regular, grid_random)
+# dials supplies default ranges for hidden_units() and penalty() automatically
+bag_mlp_grid <- grid_regular(extract_parameter_set_dials(bag_nn_spec))
+bag_mlp_grid
+```
+There are 9 different parameter combinations in the grid.
+
+## Decision Tree
+We specify a bagged decision tree using the `rpart` modeler. There are 3 parameters to tune, 'tree_depth, min_n, cost_complexity'. Look at the `bag_tree` help to see what they mean.
+```{r}
+bag_tree_rpart_spec <- bag_tree(
+    tree_depth = tune(),
+    min_n = tune(),
+    cost_complexity = tune()
+  )  %>% 
+  set_engine("rpart") |>
+  set_mode("regression") |>
+  translate()
+bag_tree_rpart_spec
+
+# Create a grid using dials functions (grid_regular, grid_random)
+# dials supplies default ranges for hidden_units() and penalty() automatically
+bag_tree_rpart_grid <- grid_regular(extract_parameter_set_dials(bag_tree_rpart_spec))
+bag_tree_rpart_grid
+```
+There are 27 different parameter combinations in the grid.
+
+# Workflow Set
+Now we create a workflow set that will run all the possible combinations, by setting 'cross=TRUE'.
+```{r}
+wf_set <- workflow_set(
+  preproc = list(rec_basic, rec_normalized),
+  models  = list(lm = linear_spec, 
+                 nn = bag_nn_spec,
+                 dt = bag_tree_rpart_spec),
+  cross = TRUE # Cross-combines all recipes with all models
+)
+```
+There are 2 data combinations, times 9 versions of the nn model, and times 27 versions of the decision tree model.
+
+# Fit All Workflows
+Using the "tune_grid" option in the `workflow_map` applies all the tuning combinations.
+
+*In computerese, a 'map' is a function that applies an action to all the possible choices.  You have used maps before, such as `sapply` to multiple columns.*
+
+Again we set a seed so you can reproduce these results.
+
+This could take a while. We put a `tictoc` timer around the step to find out exactly how long. Some warnings are normal with neural nets.
+```{r}
+set.seed(123)
+# Fit every workflow in the set across all CV folds
+tictoc::tic()
+wf_results <- wf_set %>% 
+  workflow_map("tune_grid", resamples = folds)
+tictoc::toc()
+wf_results
+```
+
+For me it took 164 seconds. 
+
+There are 6 rows of results, one for each of two data options (unscaled and scaled) and three models (lm, dt, and nn).  Each has a whole set of tuning results for the different parameter choices.
+
+# Model Performance
+There's a nice function to collect the metrics for this host of models.
+```{r}
+collect_metrics(wf_results)
+```
+
+## Comparable Metric
+To compare the linear model with the others, we have to agree on a performance measure we can calculate for all techniques. One of the simplest is the RMSE or root-mean-squared-error, which is good for regression, like here. To get it we first calculate the errors or residuals, the difference between the actual `medv` values in Boston and the predicted values.  Then we square each of these and we add up all the squares, then take the square root of the result. The formula looks like this.
+
+$$ RMSE = \sqrt{ \sum_{i=1}^n (truth_i-estimate_i)^2  }$$
+
+We will rank the models by `rmse`. There are 6 options (2 recipes and 3 models), and one best set of parameters for each one.
+```{r}
+# Rank models by performance (e.g., RMSE)
+# select_best = TRUE means only retain the best submodel for each workflow
+# otherwise all are retained. We don't need the worse ones.
+model_results = rank_results(wf_results, 
+             rank_metric = "rmse", 
+             select_best = TRUE)
+model_results %>% filter(.metric=="rmse") %>% gt()
+```
+
+# Visualize Comparisons
+You want a low value for rmse. These plots show all of the runs with the different parameters, and there are confidence limits on each data point due to the use of bagging.
+<a name="fig1"></a>
+```{r}
+wrap_plots(
+  list(autoplot(wf_results, metric = "rsq"),
+       autoplot(wf_results, metric = "rmse")
+      ), ncol=2, guides='collect')
+```
+A green one, the tree, seems to be the best for both.
+
+# Finalize Best Model
+
+Once you pick the winning workflow, extract it and its parameters. Then finalize it on the whole dataset, and look at the metrics.
+
+```{r}
+# Extract a specific workflow (e.g., "recipe_1_dt")
+best_wf <- extract_workflow(wf_results, id = "recipe_1_dt")
+best_wf
+
+# Extract the best hyperparameters for that specific workflow
+best_params <- select_best(
+  extract_workflow_set_result(wf_results, id = "recipe_1_dt"), 
+  metric = "rmse"
+)
+best_params
+
+# Finalize by creating the best workflow with the best hyperparameter values
+final_wf <- finalize_workflow(best_wf, best_params)
+final_wf
+```
+
+Then finalize it on the whole dataset, and look at the metrics.
+
+```{r}
+# Fit on 100% of data, that is on the `split` object
+tictoc::tic()
+final_fit <- last_fit(final_wf, split)
+tictoc::toc()
+
+# and evaluate on test_data
+# by viewing test_data metrics (e.g., RMSE, R-squared)
+collect_metrics(final_fit)
+```
+
+# Predictions
+Make predictions for the test data rows. We know the rmse for our model overall is 2.68, very low.
+```{r}
+Pred = collect_predictions(final_fit, summarize=TRUE) %>% 
+  arrange(.row)
+Pred
+```
+
+We can make up an `augment` function with the fitted values and residuals, and then calculate the RMSE using `yardstick::rmse()`. We put the predictions and residuals in a nice table.
+
+```{r}
+final_augment =  Pred %>% select(.row, medv, .pred) %>% 
+  mutate(.resid = medv-.pred,
+         .std.resid = c(scale(.resid)))
+final_rmse = final_augment %>% 
+  yardstick::rmse(truth = medv, estimate = .pred) %>% 
+  pull(.estimate)
+final_augment %>%
+  gt() %>% opt_interactive() %>% 
+  fmt_number(columns=c(-.row), decimals=3) %>% 
+  tab_header(title="Predictions and Residuals", 
+             subtitle=paste0("RMSE = ", round(final_rmse,3)))
+```
+
+# YVP plot
+A Y vs Predicted plot is one assessment we can make.  Predictions look pretty good without many far afield.
+```{r}
+final_augment %>% ggplot() + 
+  geom_point(aes(medv, .pred))+
+  geom_abline(slope=1, intercept=0, color="red", linetype = "dashed")
+```
+# Residuals
+Now we can check out the residuals. Because the winning model is not a linear model of class `lm`, I cannot use` gg_residual_plots()`; work for maybe another day.
+
+I made up the plots here; each one has 4 layers.
+```{r message=FALSE}
+list(
+  # resid
+  final_augment %>% ggplot(aes(.pred, .resid)) +
+    geom_point() +
+    geom_smooth(method="loess", formula='y~x', se=FALSE) +
+    labs(title="Residual vs Fitted", 
+         y="Residuals", x="Fitted Values"),
+  # qq
+  final_augment %>% ggplot(aes(sample = .std.resid)) +
+    geom_qq() +
+    geom_qq_line(color = "red") +
+    labs(title = "QQ Plot", 
+         x="Theoretical", y="Std Residuals"),
+  # scale-location
+  final_augment %>% ggplot(aes(.pred, sqrt(abs(.std.resid)))) +
+    geom_point() +
+    geom_smooth(method="loess", formula='y~x', se=FALSE)+
+    labs(title="Scale-Location", 
+         y="\u221A|Std Residual|", x="Fitted Values"),
+  # histogram
+  final_augment %>% ggplot(aes(x=.std.resid)) +
+    geom_histogram(aes(y=after_stat(density)),
+      fill="gray", color="black", alpha=.5) +
+    stat_function(fun=dnorm, 
+                  args=list(mean(final_augment$.std.resid), 
+                            sd(final_augment$.std.resid))) +
+    labs(title="Histogram", y="Density", x="Std Residual")
+  
+) %>% wrap_plots(ncol=2)
+```
+The residuals plots are shown above. The residuals are centered around zero, and the distribution is fairly normal. The LS plot shows that the variance of the residuals is constant across the range of fitted values, so we have *homoscedasticity*. The QQ plot shows that the residuals are approximately normally distributed, so we have *normality*. The residuals are independent, so we have *independence*.
+
+Thus the bagged `rpart` decision tree model, with no data normalization, seems to do a good job of modeling the data for predictions.
+
+# Viz the tree?
+Because a bagged tree is an ensemble (a collection of many different trees combined together), you cannot plot it as a single tree using `rpart.plot()`. If you try to extract the engine of a bagged model and plot it, it will throw an error.
+
+If you want to visualize a tree, you will need to fit a standard single decision_tree() model first!
+
+We won't do it here.
+
+# Cautionary Tale
+
+Because the bagged models utilize random processes, each time you run them you will get another answer. This is disconcerting to a user. It raises the question of whether the AI models will possibly botch up the model on another data set. It's hard to explain to a non-technical user, and even harder to justify that these AI models will give robust results on new data. This calls into question the interpretability of the algorithm.
+
+A neural network uses randomness in possibly three places [Khandelwhal, 2020](#r2). To prevent getting a different answer for purposes of repeatability, one can set a seed for the random number generator in R to a specific integer. However, then one is constraining the algorithm artificially, in order to allow a reader to reproduce the results published.  That perhaps is not what we want if we are trying to convince a non-technical user, say a real estate agent, that our model will be effective. 
+
+We could easily game the system, by trying lots of random seeds and picking the result we like the best for the prediction. Or we could 'bag' it (which just runs it many times) and report the averages. 
+
+# Final Predictions
+Because the best model was not normalized, the  predicted values are the true values; we don't need to unscale the data.
+
+Using a `tidymodels` workflow, we don't need to worry about the normalization anyway; predictions automatically come out in the proper scale units.
+
+# The Bottom Line
+
+Now we have a preferred model we could apply to our data to make predictions of median home value for a new Boston community. To do it we would collect values of the 13 drivers for that area, and make the prediction for this new community.
+
+# Conclusion
+
+Which model are we likely to suggest? How would we explain that model to our potential users?
+
+Unfortunately, we don't get an actual decision tree to show our decisionmakers how we got the numbers. 
+
+That's where __Interpretability__ comes in. 
+
+# References
+::: {#r1}
+1. Boehmke, Barry. (2020) Regression Artificial Neural Network, *UC Business Analytics R Programming Guide*, University of Cincinnatti, http://uc-r.github.io/ann_regression, retrieved on October 29, 2021.
+
+::: {#r2}
+2. Khandelwhal, Renu. (2020) How to solve randomness in an artificial neural network? *Towards Data Science*, April 30, 2020. https://towardsdatascience.com/how-to-solve-randomness-in-an-artificial-neural-network-3befc4f27d45, retrieved on October 30, 2021.
+
+:::{#r3}
+3. Hartman, B. (2026) Workflow Multiple Models. (Workflow Multiple Models.nb.html)
+

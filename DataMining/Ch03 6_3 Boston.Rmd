@@ -1,0 +1,201 @@
+---
+title: Ch03 6_3 Boston
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-06 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+abstract: |
+  We follow Chapter 3 lab Section 6.3 of [ISLR](#r1), in an R Notebook using modern tidyverse methods, performing a multiple regression on the `Boston` dataset.
+---
+
+# Introduction
+We deal with regression and analysis of the `Boston` dataset from the `ISLR2` package, focusing on a simple regression, of target `medv` on driver `lstat` and `age`. We run the regression, interpret it and look at residuals, and also consider outliers briefly with some hints for dealing with them easily. It is based on [our text](#r1).
+
+# Packages {-}
+We make the `mbadtools` required packages available, and also load the `ISLR2` package for data.
+```{r}
+library(ISLR2) # for the course data
+# load github packages
+library(mbadtools, quietly = TRUE)
+``` 
+
+# Data
+We have seen this before.
+```{r}
+data(Boston)
+Boston
+```
+
+A skim shows what the columns are like.
+```{r}
+Boston %>% skim
+```
+There's no missing data.
+
+# Examining Data
+A pairs plot is often useful.
+
+::: {#x1}
+```{r fig.height=8, fig.width=12}
+Boston %>% ggpairs(progress=FALSE)
+```
+:::
+
+What can we tell from the plot? Only certain predictors are related to `medv`, some others just look kind of random.
+
+# Regression
+Run a regression of `medv` as target, and `lstat` and `age` as drivers. This is a bit like Zillow does to predict house prices. `lm()` is the function for linear regression. Notice the formula showing `medv` depends on `lstat` and `age`.
+```{r fig.width=10}
+lm.fit=lm(medv~lstat+age,data=Boston)
+lm.fit %>% glance %>% gt_add_significance()
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+Notice the following:
+
+- (from `glance`) The adjusted R-squared is 54.9 ; 54.9% of the variation in the target is explained by the regression computation with lstat and age. For two drivers or more, we look at the Adjusted R-squared. 
+- The statistic is the F-statistic; its p-value tells you the probability that ALL the coefficients are simultaneously zero. If they were, there is no meaningful regression or dependence here.
+- (from `tidy`) The coefficients are positive (only a little) for `age`, and negative for `lstat`, the percent of low income in the city. We would expect the `lstat` coefficient to be negative, but we might expect the `age` coefficient to be negative also.
+- all three coefficients have p-values very low, much less than .01. The p-value for a coefficient tells you the probability that that coefficient could really be zero. We usually say that a coefficient with a p-value <.05 is 'significant'. Technically the p-value is the significance level. I have colored the significant coefficients and p-values light green.
+
+As you can see the regression looks 'good'.
+
+# Residual Analysis
+BUT...we have to examine the residuals to see if the assumptions are satisfied. Examine residuals quickly. First I define my favorite sequence of plots.
+
+```{r}
+lm.fit %>% gg_residual_plots()
+lm.fit %>% gg_partial_residual_plots()
+```
+
+Here is how to examine it.
+
+- QQ plot (Upper right) - Are residuals normally distributed?
+  - test: are the dots pretty much on the dotted line?
+  - answer: yes for small values but no for large positive residuals. 
+  - conclusion: Not great.
+- RF plot (Upper left) - Do residuals have mean zero, and are they varying about the same at all fitted values?
+  - test: is the blue line along the dotted line at zero? Is it straight?
+  - answer: no not straight; the hook up at the end is worrying, and not really at zero. 
+  - conclusion: the regression has a problem with residuals.
+- SL plot (Lower right) - Do residuals have constant standard deviation?
+  - test: is the blue line horizontal, at some fixed value?
+  - answer: not good, a U-shape, and big upsweep at end
+  - conclusion: the equal variance assumption is not satisfied, calling regression into question.
+- Histogram plot (Lower right) - is the distribution normal?
+  - test: is the histogram bell-shaped?
+  - answer: no, it is skewed to the right.
+  - conclusion: the normality assumption is not satisfied. 
+
+We should not be satisfied without trying other models - we can possibly do better.
+
+# Regression on all variables
+
+Try a regression for `medv` on all variables. It's easy to do this in R, the dot means all other variables.
+```{r}
+lm.fit1=lm(medv~.,data=Boston)
+lm.fit1 %>% glance%>% gt_add_significance()
+lm.fit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+Look at the (glance). Adjusted R-squared is 73%, not too bad, but only 19% higher than just using the 2 variables above. 
+
+Examine the (tidy). It shows that some coefficients are not significant-- their p-values are high >.05. (no color). Maybe these variables don't add anything to the predictive ability.
+
+# Multicollinearity
+
+One significant problem with multiple regression is multicollinearity. That is when one of the drivers is related to one or more others. The [pairs plot](#x1) shows us whether one driver is related to exactly one other driver; the dot plots look like a sort of mushy line.  But you can't tell if one variable is well predicted by several of the others. The danger of multicollinearity is that you will get erroneous predictions, and some variables that are predicted by others should be left out.
+
+A measure of multicollinearity is the variance inflation factor. There are various interpretations; a vif of around 10 denotes multicollinearity; a vif of > 2 denotes a bit of multicollinearity. One way to check multicollinearity uses the `vif` routine in the package `car`. 
+
+```{r}
+car::vif(lm.fit1)
+```
+
+Here you can see that the test is wishy-washy. The worst ones are `tax, rad`.  We might test these.
+
+Are age and lstat collinear?
+```{r}
+Boston %>% ggplot() + geom_point(aes(x=age, y=lstat) )
+```
+
+Yes they kind of are, from the graph. That is multicollinearity. It might or might not be enough to reject the regression.
+
+`tax` is a bad one...look at [the pairs plot](#x1).
+
+We cannot see how tax is multicollinear (i.e. it could be predicted with some combination of the others). But we could leave it out and test the regression to see if it improves.
+
+# Diversion - 3D Plots
+
+We will do some 3d plotting. It's a diversion, because it only works when there are exactly two drivers.
+
+## `plotly`
+
+An easy approach uses package `plotly`. To add a regression plane you need to compute the grid. We won't do it here.
+
+```{r}
+library(plotly)
+plot_ly(Boston, x = ~lstat, y = ~age, z = ~medv)
+```
+
+By twisting the plot you an see how a regression plane might fit best through the points.
+
+# Another Regression
+We test removing the `age` driver variable from the regression on all variables. Does it make a difference that is substantial? Here's what we had including `age`.
+
+```{r}
+lm.fit1 %>% glance() %>% gt_add_significance() 
+lm.fit1 %>% tidy  %>% gt_add_significance()
+```
+
+Run the regression without age. Notice minus sign to take age from all variables (the dot).
+```{r}
+lm.fit2=lm(medv~.-age,data=Boston)
+lm.fit2 %>% glance() %>% gt_add_significance()
+lm.fit2 %>% tidy() %>% gt_add_significance() 
+```
+
+Is this better? The Adjusted R-squared values are not very different. `indus` is not significant but the others are. 
+
+Try removing just tax.
+```{r}
+lm.fit3=lm(medv~.-tax,data=Boston)
+lm.fit3 %>% glance() %>% gt_add_significance()
+lm.fit3 %>% tidy  %>% gt_add_significance()
+```
+
+Now `indus` and `age` are not significant. The Adjusted R-squared is about the same.
+
+Adding more variables definitely caused Adjusted R-squared to go up (that's expected). But some variables don't do very much to help the regression.
+
+# Transformation
+We try a log transform of `rm`.
+
+```{r}
+a =ggplot(Boston)+
+  geom_point(aes(rm, medv))+
+  theme_bw()
+b =ggplot(Boston)+
+  geom_point(aes(log(rm), medv))+
+  theme_bw()
+a/b
+```
+
+Doesn't seem to matter much.
+
+# Conclusion
+
+We investigated a multiple linear regression on the `Boston` dataset with a target of `medv` and many drivers. We found some evidence of multicollinearity, but it did not seem to make much difference in the final regression.
+
+We saw some ways of interpreting regressions, including residual plots, and introduced multicollinearity.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 3 Section 3.6.3 Multiple Linear Regression, page 113ff.

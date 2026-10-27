@@ -1,0 +1,214 @@
+---
+title: Ch03 Publication Times
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-07  Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+abstract: |
+  We study publication times in journals with data from `ISLR2`.
+---
+
+# Introduction {-}
+We are going to look at data about publication times for articles funded by the National Heart, Lung, and Blood Institute. The data are from the `ISLR2` package, but are not used in [the text](#r2).
+
+# Packages {-}
+
+Loading the [standard packages](#r1) for this course:
+```{r}
+library(ISLR2) # package contains the data files
+library(mbadtools, quietly=TRUE) # for mbad courses
+```
+
+# Data {-}
+We get the data from the package. The data are from [Gordon et al., 2013](#r3).
+```{r}
+data(Publication)
+?Publication
+Publication
+```
+
+# Data Description {-}
+An initial attempt at description uses `skim`.
+
+```{r}
+Publication %>% skim
+```
+
+There are 244 rows and 9 columns. There is one character variable, with 14 different values, not a candidate for a factor. 
+
+A glimpse is always useful.
+```{r}
+Publication %>% glimpse
+```
+
+>Publication {ISLR2}	R Documentation
+
+>Time-to-Publication Data
+
+>Description Publication times for 244 clinical trials funded by the National Heart, Lung, and Blood Institute.
+
+>Format A data frame with 244 observations, each representing a clinical trial, and 9 variables:
+
+|Column | Description|
+|-------|----------------------|
+|posres|Did the trial produce a positive (significant) result? 1=Yes, 0=No.|
+|multi|Did the trial involve multiple centers? 1=Yes, 0=No.|
+|clinend|Did the trial focus on a clinical endpoint? 1=Yes, 0=No.|
+|mech|Funding mechanism within National Institute of Health: a qualitative variable.|
+|sampsize|Sample size for the trial.|
+|budget|Budget of the trial, in millions of dollars.|
+|impact|Impact of the trial; this is related to the number of publications.|
+|time|Time to publication, in months.|
+|status|Whether or not the trial was published at time: 1=Published, 0=Not yet published.|
+
+# Data Wrangling {-}
+
+Four columns seem to be a 0-1 variable. Let's make them factors. This is optional, but we don't want regression to treat them as meaningful numeric values.
+
+```{r}
+Publication1 = Publication %>%
+  mutate(across(c(posres, multi, clinend, status),
+                factor) )
+Publication1 %>% skim
+```
+This did the job.
+
+# Data Visualization
+A `ggpairs` plot of the numeric variables is a good idea.
+```{r fig.height=12, fig.width=12}
+Publication1 %>% select(where(is.numeric)) %>% ggpairs(progress=F)
+```
+
+Most papers were published fast, but there aren't any other readily observable patterns.
+
+# Research Problem {-}
+
+We will see whether `sampsize`, `budget` and `impact` have an influence on publication time.  Perhaps a linear model applies.
+
+# Analysis {-}
+We will try a linear model.
+
+```{r message=FALSE}
+linfit = lm(time ~ sampsize + budget + impact, data=Publication1)
+linfit %>% glance %>% gt_add_significance()
+linfit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The tidy shows us that `sampsize` and `budget` are not significant, their coefficients might well be zero. But `impact` has a negative relation to time. The adjusted R-squared is only .12, or 12% of the variation explained by this model. Not much.
+
+## Residual analysis
+We make some graphs of the residuals for analysis.
+
+```{r message=FALSE}
+linfit %>% gg_residual_plots()
+```
+
+There is an upward rise in the QQ plot, signifying that the residuals are not normally distributed. The Resid plot does show a mean of about 0, but there is significant variation in the larger fitted values compared to the smaller ones, a possible violation of assumptions. Finally in the LS plot there is rising variation with fitted values, not supporting the assumption of homoscedasticity.
+
+We are not happy with this model.
+
+# Including factors
+We extend the analysis by adding `posres`,`multi`, and `clinend` factor variables. A positive result, more than one center, or a clinical end might influence the time to publication.
+
+```{r}
+linfit2 = lm(
+  time ~ sampsize + budget + impact + posres + multi + clinend,
+  data=Publication1)
+linfit2 %>% glance %>% gt_add_significance()
+linfit2 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The `glance` shows that the adjusted r-squared did not go up. The `tidy` shows that none of the new variables have coefficients significantly different from zero. In fact, again only `impact` is significant.
+
+## Residuals 2
+I do not think this will be better.
+```{r}
+linfit2 %>% gg_residual_plots()
+```
+
+And indeed it is not.
+
+# Baseline with impact only
+
+We will analyze the regression with only `impact` before looking at other models. 
+
+```{r}
+linfit1 = lm(time ~ impact, data=Publication1)
+linfit1 %>% glance %>% gt_add_significance()
+linfit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The adjusted r-squared does not change, around .12. But at least there are fewer variables. The impact is significant, and negative, as we might expect--- high-impact journals might tke longer in th review process. We will check residuals.
+```{r}
+linfit1 %>% gg_residual_plots()
+```
+
+No worse and no better.
+
+Occam's Razor tells us that the last regression model, `linfit1`, is best so far, being easier to explain.
+
+# Does status matter?
+
+Maybe the status of the article makes a difference in the time, as well as the impact.
+
+```{r}
+linfits = lm(time ~ impact + status, data=Publication1)
+linfits %>% glance %>% gt_add_significance()
+linfits %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+linfits  %>% gg_residual_plots()
+```
+
+`status` does not seem to matter, as its coefficient might as well be zero.
+
+# Funding Mechanism
+
+There's one more variable, `mech`, that we have not tried yet. It has 14 discrete values, which cannot be handled properly as a factor.
+
+Let's explore by looking at the distribution of data.
+
+```{r fig.height=12, fig.width=12}
+Publication1 %>% ggplot() +
+  geom_boxplot(aes(mech, time, color=mech), show.legend=F)+
+  theme_bw()
+```
+
+Funding mechanism R01 seems to yield some very long pub times, with U04 a distant second. But the medians are all in a similar range. Contract mechanism seems to deliver shortest median pub times. U54 seems to have only a few entries.
+
+# Impact and `posres`
+You would think that a positive result and impact taken together would make a bigger difference than one or the other. This is called an interaction effect.  That's a conjecture, framed as a hypothesis. Let's test it.
+
+```{r}
+linfiti = lm(time ~ impact*posres, data=Publication1)
+linfiti %>% glance %>% gt_add_significance()
+linfiti %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+linfiti %>% gg_residual_plots()
+```
+
+Neither `posres` nor the product of `posres` and `impact` makes any difference; both coefficients are not significantly different from zero. The r-squared doesn't change. 
+
+Residuals behavior is not improved.
+
+# Conclusion {-}
+My conclusions are that the simplest model with only `impact` as a driver is the best of a bad lot.  None of them has much predictive value. 
+
+Perhaps publication times of results are not influenced much, if at all, by any of these drivers.  It's mostly random.
+
+We also saw how to make a table in the text. Kind of funky, but doable.
+
+# References {-}
+::: {#r1}
+1. Hartman, B. (2026) Basic Notebook Template. (https://1drv.ms/u/c/50100c84fbd246fa/IQD6RtL7hAwQIIBQrSYIAAAAAUGMxvUirsrlRdX5fojUAaY?e=BemEMv)
+
+::: {#r2}
+2. James, G., Witten, D., Hastie, T., and Tibshirani, R. (2021) An Introduction to Statistical Learning with applications in R, Second Edition, (https://www.statlearning.com), Springer-Verlag, New York
+
+::: {#r3}
+3.Gordon, Taddei-Peters, Mascette, Antman, Kaufmann, and Lauer. Publication of trials funded by the National Heart, Lung, and Blood Institute. New England Journal of Medicine, 369(20):1926-1934, 2013.
+

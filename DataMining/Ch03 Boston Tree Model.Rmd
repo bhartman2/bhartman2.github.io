@@ -1,0 +1,166 @@
+---
+title: Ch03 Boston Tree Model
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-08  Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We discuss the `Boston` dataset, comparing a decision tree model to a linear model.
+---
+
+# Introduction {-}
+In this notebook we will model the median home value in different localities in the Boston area using both multiple linear regression and a decision tree.  The objective is to learn more about multiple linear regression in comparison with another slightly more advanced routine.
+
+# Decision Trees {-}
+Decision tree modeling cannot really be called much more advanced along the AI dimension.  Its basic idea is simply to scan all the drivers and pick the one driver and the value of that driver that splits the observations into two groups, one group below the value and the other above the value. The idea is to pick the driver and value that separates the two groups the most.  
+
+How we measure the separation is also a choice we make; most tree algorithms have a built in method they use by default, but other methods can be used. 
+
+We keep doing this until we isolate each group of observations in its leaf.
+
+# Packages {-}
+First we make sure the packages we need are loaded. `rpart` is a good one for decision trees. You will also need to download the `augment_neuralnet.R` script and place it in your work folder.
+
+```{r}
+library(ISLR2) # package contains the data files
+library(rpart) # one package for decision tree models
+library(rpart.plot) # plots the results of rpart
+library(mbadtools, quietly=TRUE) # used for MBAD courses
+source("augment_neuralnet.R")
+```
+
+# Acquire Data
+Next we make the Boston dataset available, and check it out.
+```{r}
+data(Boston)
+Boston %>% skim()
+```
+
+We see that there are no missing values, and `chas` is the only 0-1 variable or dummy variable.
+
+# Linear Regression {-}
+A multiple linear regression can use `medv`  as the target and all the others as drivers.
+
+```{r}
+lm.fit=lm(medv~., data=Boston)
+lm.fit %>% glance %>% gt_add_significance()
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fit %>% gg_residual_plots()
+```
+
+We have about 73% Adjusted R-squared, and all drivers except `indus` and `age` have significant coefficients. We could consider a better model leaving these out.  The residual plots show some problems with the four assumptions.
+
+- The u-shape of the RF and LS plots show heteroscedasticity; 
+- the QQ plot shows a substantial deviation from normality for the large fitted values. 
+
+So while we are impressed with the R-squared, we are not so happy with the residuals.
+
+Next we will plot the values of `medv` from the Boston data, the observed values, and the fitted values from `lm.fit`. In this graph, a straight line with slope 1 shows an exact match between the observed and predicted values.
+This is called a y-vs-predicted (YVP) plot.
+
+```{r}
+lm.RMSE = lm.fit %>% augment %>% yardstick::rmse(medv, .fitted)
+lm.fit %>% gg_residual_plots(items=8) +
+  annotate(geom="text", x=40, y=10, 
+           label=paste0("RMSE = ",
+                        round(lm.RMSE %>% pull(.estimate),3))
+  )
+```
+Notice that this regression model does a pretty bad job on localities when it predicts the `medv` over about 35 thousand. The red line would represent a perfect prediction match with the actual observed value.
+
+# Decision Tree
+
+A decision tree can be used for either regression or classification. Its internal mechanism is based on a classification approach, however; at each stage of the tree it splits the data in two groups using the driver that does the separation of the groups the best.
+
+We will use the package `rpart`. The function `rpart()` is used to construct the tree.  
+
+To control how the splitting works, there are some parameters. These provide ways to supervise the model. They have certain defaults which can be seen by running `help(rpart.control)` in your console. 
+
+For instance, the default for the parameter `minsplit=20`, namely, no split will happen at a node of the tree unless there are 20 observations at the node to be divided. The parameter `maxdepth=30` defines how many levels the tree will have, with a default of 30. You can set it smaller if you want to use fewer divisions for predictions.
+
+Another key control parameter is `xval=10`, which stipulates the number of cross-validations, default 10, to be done.  
+
+This is where the decision tree algorithm attempts to control excessive variation by randomly dividing the observations into 10 groups or 'folds'; it then makes 10 decision trees, each one omitting one of the folds' data, and using the other 90%. Once all 10 trees are created, it 'averages' the trees to get the fitted values for the target.
+
+For our trial we are going to accept the default control parameters. Here is the R code for an `rpart` model. We will then display it with `rpart.plot()`
+
+```{r}
+rpart.fit = rpart(medv~., data=Boston, method="anova")
+rpart.plot(rpart.fit)
+```
+
+Remember there must be 20 observations in any split group (not in a leaf!).
+
+Next we will make predictions using `augment_any` on our `rpart` model.
+
+```{r warning=FALSE}
+# augment
+T = augment_any(rpart.fit, Boston, response="medv")
+# rmse
+rpart.RMSE = rmse_vec(T$medv, T$.fitted)
+# YVP plot; we cannot use `gg_residual_plots(items=8)`
+ggplot(T, aes(medv, .fitted)) +
+  geom_point(color="red") +
+  coord_cartesian(ylim=c(0,50)) +
+  geom_abline(aes(intercept=0, slope=1), linetype="dotted", linewidth=1.2)+
+  labs(title="Predicted vs Observed medv from Boston using rpart regression tree") +
+  annotate("text",x=40, y=10, 
+           label=paste0("RMSE = ",round(rpart.RMSE,3)))
+```
+
+Notice how the regression tree provides a single predicted value for a range of observed values which fell into the same leaf of the tree at the bottom. Thus there are only 8 different predicted values of `medv`. And the band of observed values in any given predicted value is quite wide at each predicted level.  So it's a quite different kind of forecast.
+
+We could tune this by setting 'minsplit' to a smaller number.
+
+Perhaps it's not quite so personalized as what the customer was expecting. But, the RMSE for the `rpart` forecasts is substantially smaller than the linear regression SSE.
+
+# Simple Tuning
+```{r}
+rpart.fit5 = rpart(medv~., data=Boston, method="anova",
+                  minsplit=5)
+rpart.plot(rpart.fit5)
+```
+
+```{r warning=FALSE}
+# augment
+T5 = augment_any(rpart.fit5, Boston, response="medv")
+# rmse
+rpart.RMSE5 = rmse_vec(T5$medv, T5$.fitted)
+# YVP plot
+ggplot(T5, aes(medv, .fitted)) +
+  geom_point(color="red") +
+  coord_cartesian(ylim=c(0,50)) +
+  geom_abline(aes(intercept=0, slope=1), linetype="dotted", linewidth=1.2)+
+  labs(title="Predicted vs Observed medv - Boston - rpart - minsplit=5") +
+  annotate("text",x=40, y=10, 
+           label=paste0("RMSE = ",round(rpart.RMSE5,3)))
+```
+While there are still only a few predicted values, the RMSE went lower!!!
+
+This shows that tuning the parameters (searching a grid for the best values bsed on RMSE) could help!
+
+# Conclusion
+
+To be content with the `rpart` model we would have to try it a lot more. 
+
+Disadvantages:
+
+- the random averaging of the trees means it is less explainable
+- the fact that it only produces a few different estimates is not satisfactory for a typical client looking for the possible median value in a community.
+
+Advantages:
+
+- It produces substantially better error measured by RMSE, 4.0 or even lower with tuning, compared to 4.7.
+- the graphical output can be used to explain how it made its predictions.
+
+# References
+:::{#r1}
+`rpart` package documentation (n.d.) (https://www.rdocumentation.org/packages/rpart)
+

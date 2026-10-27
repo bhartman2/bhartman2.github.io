@@ -1,0 +1,307 @@
+---
+title: Ch03 6_2 Boston
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-06 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: flatly
+  highlight: tango
+link-citations: true
+abstract: |
+  We follow Chapter 3 lab Section 6.2 of [ISLR](#r1), in an R Notebook using modern tidyverse methods, performing a simple regression on the `Boston` dataset.
+---
+
+# Introduction {-}
+We deal with regression and analysis of the `Boston` dataset from the `ISLR2` package, focusing on a simple regression, of target `medv` on driver `lstat`. We run the regression, interpret it and look at residuals, and also consider outliers briefly with some hints for dealing with them easily. We will follow [the ISLR textbook](#r1), Chapter 3.
+
+# Packages {-}
+We make the `mbadtools` required packages available, and also load the `ISLR2` package for data.
+```{r}
+library(ISLR2) # for the course data
+if(!("pak" %in% installed.packages())) install.packages("pak")
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+library(mbadtools, quietly = TRUE)
+```
+
+# Data {-}
+We have seen this before.
+
+```{r}
+data(Boston)
+Boston
+```
+
+There are 506 rows representing suburbs of the city of Boston, and 14 columns of data, including the target variable `medv` (median value of owner-occupied homes in $1000s) and the driver variable `lstat` (lower status of the population, in %).
+
+We can see the data using the `skim` function from the `skimr` package, which is part of the `tidyverse` package. It gives a nice summary of the data.
+```{r}
+Boston %>% skim
+```
+
+There is no missing data.
+
+# Regression {-}
+We will run a simple regression of `medv` on `lstat`, which is the lower status of the population, in percent.  This is a simple linear regression, and we will use the `lm()` function to do it. We will also use the `broom` package to tidy up the output, and the `ggplot2` package for plotting. The optional `mbadtools::gt_add_significance()` function produces a nicely formatted table with significant p-values colored to be seen easily.
+
+```{r}
+lm.fit=lm(medv~lstat,data=Boston)
+lm.fit %>% glance %>% gt_add_significance()
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+The `lstat` coefficient is significant.
+
+What's in the `lm.fit` object? Most of it is not usually relevant. And the key entries are available using `tidy, glance, augment` functions.
+```{r}
+names(lm.fit)
+```
+There is a lot of stuff in it, most of which we don't use.
+
+Coefficients can be seen two ways:
+```{r}
+coef(lm.fit)
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+How accurate are the coefficients of this linear model? A small difference in coefficients particularly the slope will make a big difference in predictions' confidence intervals.
+
+We can compute the confidence intervals for the coefficients using the `confint()` function or `tidy()`. The default is a 95% confidence interval, but we can change that if we want. In `tidy` they appear when we set the 'conf.int=TRUE' option.
+
+These are 5% intervals, so we have a 95% chance that these coefficients are inside the interval. Notice that 0 is not included in either interval. This is equivalent to saying that the coefficient is significantly different from 0, which is also to be seen from the p-value for the coefficient in the summary. The confidence interval size can be changed in `tidy` using the 'conf.level' parameter, which defaults to 0.95, or 95%.
+
+# Predictions {-}
+We first make predictions using the model object `lm.fit`, of all the rows of data in the Boston dataset. The `augment` function provides most of the information required for analysis of predictions.  The `predict` function is now becoming less fashionable, though it is still the *de facto* standard for many R packages.
+
+```{r}
+lm.fit %>% augment(interval="confidence", se_fit=TRUE)
+```
+
+The `interval` parameter specifies whether we want a confidence interval or a prediction interval. The `se_fit` parameter specifies whether we want the standard error of the fitted values.
+
+The resulting data frame or tibble has the original data, the fitted values, the residuals, and the standard errors of the fitted values, as well as the lower and upper confidence interval for the `.fitted` prediction. The residuals in the `.resid` column are the difference between the actual values of `medv` and the predicted values from the regression. The standard errors of the fitted values in `.se.fit` are useful for computing confidence intervals for predictions. `.hat`, `.sigma`, `.cooksd` columns are not used here, but they are useful for further analysis of the regression. The `.std.resid` column is standardized residuals.
+
+Here's the old way.
+```{r}
+lm.fit %>% predict(interval="confidence", se.fit=TRUE) %>% glimpse
+```
+
+# New Predictions
+Predict some `medv` values for different specific values of `lstat`. The driver values to be used for the estimate must be in a data frame.
+
+```{r}
+# identify specific values of `lstat` to predict `medv` for.
+new=data.frame(lstat=c(5,10,15))
+lm.fit %>% augment(newdata=new, interval="confidence", se_fit=TRUE)
+```
+
+This gives predictions of the mean of `medv` if we set `lstat` = those specific values repeatedly. 
+
+If we want to predict a specific sample rather than the average prediction at these values of `lstat`, we do this by setting 'interval="prediction"' instead of "confidence".
+```{r}
+lm.fit %>% augment(newdata=new, interval="prediction", se_fit=TRUE)
+```
+
+Notice the confidence intervals are wider! You're less likely to be accurate predicting a single observation than you are predicting the average of many observations.  The prediction interval is wider than the confidence interval because it accounts for the variability of the individual observations around the regression line, while the confidence interval only accounts for the variability of the regression line itself.
+
+# Plotting {-}
+Next we plot the data and the regression line two ways. The first way uses the layer `geom_abline()` with a slope and intercept. Notice we use the simple `coef` function to get the coefficients of the regression. 
+
+```{r}
+ggplot(Boston)+
+  geom_point(aes(lstat,medv))+
+  geom_abline(aes(intercept=coef(lm.fit)[1],
+              slope=coef(lm.fit)[2]), color="red")
+```
+The second way uses the `geom_smooth()` function, which is a more modern way to plot a regression line. It is more flexible and can handle more complex models, but it is not as simple as `geom_abline()`.
+
+```{r}
+ggplot(Boston)+
+  geom_point(aes(lstat,medv))+
+  geom_smooth(aes(lstat,medv), method="lm", color="red", 
+              formula='y~x', se=TRUE)
+```
+
+Observe that 'se=TRUE' provides the confidence bands around the regression line. They correspond to the interval produced by `augment` using 'interval="confidence"'.
+
+Another view uses `mbadtools::gg_residual_plots()` to make a y-versus-predicted (YVP) plot.
+```{r}
+lm.fit %>% gg_residual_plots(items=8)
+```
+
+If the regression was a perfect model, all the black dots would lie on the red line.
+
+# Display Residuals {-}
+It is important to study the residuals of the regression. The residuals are the difference between the actual values of `medv` and the predicted values from the regression. We can plot the residuals against the fitted values to see if there are any patterns in the residuals. We can also plot the residuals against any of the drivers, such as `lstat`, to see if there are any patterns in the residuals with respect to the drivers. 
+
+Remember the four assumptions of regression.
+
+- Residuals are normally distributed - *normality*.
+- Residuals have constant variance - *homoscedasticity*.
+- Residuals have a zero mean - *zero-mean*.
+- Residuals are independent of fitted values, drivers, and each other - *independence*.
+
+The plots are designed to let us compare these assumptions to the real results.
+
+There are many ways to plot the residuals. We'll demonstrate some.
+
+- My favorite: `mbadtools::gg_residual_plots()`. It produces a panel of 4 plots, which are useful for diagnosing the regression. The first plot is the residuals vs fitted values (RF), the second plot is the QQ plot of the residuals, the third plot is a scale-location (SL) plot of the square root of the standard residuals against fitted values, and the fourth plot is a histogram of the residuals, useful for *normality*.
+
+```{r}
+lm.fit %>% gg_residual_plots()
+```
+
+There are 7 different plots, and the YVP plot, set via the 'items' parameter; default is 'c(1:3,7)'. These are the three usual R plots plus the histogram. You can also get the 'partial' residual plots of residuals vs each driver in turn.
+
+```{r message=FALSE}
+lm.fit %>% gg_residual_plots(items = 1:4)
+lm.fit %>% gg_partial_residual_plots()
+```
+```{r}
+lm.fit %>% gg_residual_plots(items=9)
+lm.fit %>% Tukey_test()
+```
+The Tukey test shows that a quadratic fit would be better than the linear one.
+
+# Interpreting Residuals {-}
+
+<a name="Figure1"/>
+```{r}
+lm.fit %>% gg_residual_plots()
+```
+- The QQ shows some departure from a normal distribution; *normality* may not be true. The dots do not fall on the straight line which indicates a perfect match of residuals with theoretical values from a normal distribution.
+- The RF plot shows a trend - blue line downward, then up, so *homoscedasticity* may be violated; also the *zero-mean* hypothesis is clearly not satisfied.
+- The SL plot also shows decisive evidence of a failure of *homoscedasticity*. The curved blue line, a kind of average of the absolute values of the residuals, is not flat, but curved.  The spread of the residuals is not constant across the range of fitted values.
+- The Histogram shows some departure from normality, but not too bad.
+
+<a name="Figure2"/>
+```{r}
+lm.fit %>% gg_partial_residual_plots()
+```
+
+- The partial residual plot with `lstat` shows a clear nonlinearity, so the linear regression model is not appropriate for this data. We might want to try a transformation such as polynomial regression or a generalized additive model (GAM) to capture the nonlinearity.
+
+```{r}
+lm.fit %>% Tukey_test()
+```
+
+
+- The Tukey test tests the linear regression against a regression using the square of the drivers. The last line is a joint test of all drivers. Here it's the same, because there's only one. The test is significant at the .05 level, so curvature is likely! ChatGPT says:
+
+>Interpretation: 
+
+>If 𝑝< .05: Significant curvature is present — a simple straight line is inadequate.
+
+>If 𝑝≥.05: No strong evidence for curvature — linear fit is adequate.
+
+We are not too happy with the residuals for this regression, so it might not be too good for predictions.
+
+# Leverage {-}
+
+We might be interested in whether individual observations of `lstat` (a driver) make any difference in the regression coefficients. This is called *leverage*. Leverage is the effect an individual observation of a driver value has on the whole regression; a wild one might be an 'outlier'.  There are many tests for outliers; this is a simple one for outliers in the driver values. We may want to exclude wild outliers from our regression, to make it fit better. Maybe they are 'mistakes' in the data, or observation problems.
+
+Watch [this Video](#r2) or [that video](#r3) for more information.
+
+Leverage can easily be computed using column `.hat` in the `augment` output. It is the diagonal of the hat matrix, which is a matrix that transforms the vector of observed values into the vector of fitted values.
+
+```{r}
+lm.fit %>% augment() %>%
+  # add the row number
+  mutate(index=row_number()) %>%
+  # plot
+  ggplot() +
+  geom_point(aes(index, .hat)) +
+  theme_bw()
+```
+
+Which item has the largest leverage?
+
+```{r}
+lm.fit %>% augment() %>% pull(.hat) %>% which.max()
+```
+
+Row 375 has the largest leverage. It isn't necessarily damaging to the regression-- see the [video 3](#r3) above. 
+
+# Outliers and Student
+
+Do we think there are outliers, observations (rows) that are twisting and pulling the regression line off. What are they? The book says:
+
+>... we have learned various measures for identifying extreme x values (high leverage observations) and unusual y values (outliers). When trying to identify outliers, one problem that can arise is when there is a potential outlier that influences the regression model to such an extent that the estimated regression function is "pulled" towards the potential outlier, so that it isn't flagged as an outlier using the standardized residual criterion. To address this issue, studentized residuals offer an alternative criterion for identifying outliers. The basic idea is to delete the observations one at a time, each time refitting the regression model on the remaining n–1 observations. Then, we compare the observed response values to their fitted values based on the models with the ith observation deleted. This produces deleted residuals. Standardizing the deleted residuals produces studentized residuals.
+
+Notice how I am using LaTeX notation for the math writing in the comments. You can do that anywhere in a notebook.  The LaTeX will render as mathematics.  If you don't know about LaTeX for writing math, you can ignore this, or learn a bit. Notice also that you can actually insert HTML tags such as <div> into a notebook, and they work! See how I centered the equation below.
+
+>If we let: $y_i$ denote the observed response for the $i$th observation, and $\hat{y_i}$ denote the predicted response for the $i$th observation based on the estimated model with the $i$th observation deleted then the $i$th (unstandardized) deleted residual is defined as:
+
+> <div align="center">$d_i=y_i−\hat{y_i}$</div>
+
+>Why this measure? Well, data point $i$ being influential implies that the data point "pulls" the estimated regression line towards itself. In that case, the observed response would be close to the predicted response. But, if you removed the influential data point from the data set, then the estimated regression line would "bounce back" away from the observed response, thereby resulting in a large deleted residual. That is, a data point having a large deleted residual suggests that the data point is influential.
+
+> Quoted from [Reference 5](#r5).  Read the page to see how they work.
+
+There is a function `rstudent()` to do this operation. It operates directly on the `lm` object, and returns the studentized residuals.
+
+```{r}
+lm.fit %>% augment %>%  ggplot() + 
+  geom_point(aes(.fitted, rstudent(lm.fit))) +
+  geom_smooth(aes(.fitted, rstudent(lm.fit)), 
+              method="loess", formula='y~x', se=FALSE, color="blue")
+```
+It's basically very similar. There is some evidence of nonlinearity. What would we expect? Residuals should be clustered around 0 and should be the same distance above/below the zero line. That is clearly not true here.
+
+# The Best Test {-}
+
+The best test is actually to __remove the points you think are outliers__, and see if the regression changes much, and whether the R-squared goes up.
+```{r fig.height=2.5, fig.width=5}
+lm.fit_375=lm(medv~lstat, data=Boston[-375,])
+# gt tables
+t375 = lm.fit_375 %>% tidy(conf.int=TRUE) %>%
+  select(term, estimate, conf.low, conf.high, p.value) %>%
+  gt() %>% tab_header(title="Regression Coefficients without point 375")
+t0 = lm.fit %>% tidy(conf.int=TRUE) %>% select(term, estimate, conf.low, conf.high, p.value) %>%
+  gt() %>% tab_header(title="Regression Coefficients with point 375")
+# patchwork display
+wrap_table(t0, space="fixed") / wrap_table(t375, space="fixed")
+```
+
+Point 375 did not make much difference; the coefficient of `lstat` is still about -0.95.  Possibly it is a 'good' point, not an outlier. We can leave it in.
+
+```{r fig.height=1, fig.width=5}
+wrap_table(lm.fit_375 %>% glance() %>% select(r.squared) %>%
+             gt() %>% tab_header(title="Without point 375"),
+           space="fixed") +
+wrap_table(lm.fit %>% glance() %>% select(r.squared) %>% 
+             gt() %>% tab_header(title="With point 375"),
+           space="fixed")
+```
+
+The R-squared values are almost identical.
+
+# Conclusion {-}
+
+We ran a regression and studied it for the regression `medv~lstat` in the `Boston` dataset. We made some predictions, looked at the residual plots, and examined the dataset for outliers for this regression, finding none that mattered.  
+
+More outlier tests could be done to look for other types of outliers.  R has many tests for outliers, and we are not going to dwell much on them.  
+
+If you think an observation is an outlier, run the regression with that point and without it. See if there is much difference. If not, don't worry about the point.
+
+That is also the argument for using the Studentized residuals plot.
+
+Student [Reference 4](#r4) was the pseudonym of a statistician, William Sealy Gossett, hence the name. He was also the head brewer at Guinness! Studentizing the residuals involves finding for each point the residual if it were left out of the regression, just as we are suggesting to test the outlier, and then subtracting the mean and dividing by the standard error to 'standardize' it, sometimes computing the 'z-score' in statistics. 
+
+# References {-}
+::: {#r1}
+1. ISLR (2013) Chapter 3 Section 3.6.2 Simple Linear Regression, page 110ff.
+
+::: {#r2}
+2. [Video 2](https://www.youtube.com/watch?v=xc_X9GFVuVU)
+
+::: {#r3}
+3. [Video 3](https://www.youtube.com/watch?v=s5X_Poq9dJA)
+
+::: {#r4}
+4. [Student wikipedia](https://en.wikipedia.org/wiki/William_Sealy_Gosset)
+
+::: {#r5}
+5. [Studentized Residuals psu stats](https://online.stat.psu.edu/stat462/node/247/)

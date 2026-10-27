@@ -1,0 +1,272 @@
+---
+title: Ch03 6-6 Factors
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-07 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We follow Chapter 3 lab Section 6.6 of [ISLR](#r1), in an R Notebook using modern tidyverse methods, performing a regression on the `Carseats` dataset which contains factor variables. We also try a random forest AI model.
+---
+
+# Introduction
+
+In this Notebook we will analyze the `Carseats` data from the ISLR2 package, using linear regression.  The data contains some Yes/No variables in addition to numeric ones, so we will get some experience with dummy (factor) variables and how they are handled in R. We follow [the textbook](#r3) Section 3.6.6 Qualitative Predictors.
+
+# Packages {-}
+We make the `mbadtools` required packages available, and also load the `ISLR2` package for data. Once you have `mbadtools` installed you don't need to run the first part from the Basic Notebook Template. We also include the `randomForest` package for an AI comparison.
+```{r}
+# load packages to the notebook
+library(ISLR2) # for the course data
+library(randomForest) # for an AI example
+library(mbadtools, quietly=TRUE) # standard mbad packages
+``` 
+
+# Data Acquisition
+Next we make the data available and take a look at it.
+```{r}
+data(Carseats)
+Carseats
+```
+
+There are 400 rows in the data: they represent unit sales at each store in thousands, the target, and various drivers that might affect sales.  There are numeric drivers; competitor's price, Income, ads, population in the surrounding area, average age of the population. And there are 3 discrete drivers (we call them *factors*); shelf location of the product with three levels, bad, good and medium; `Urban` (No or Yes), and `US` (in the US or not).
+
+This data is simulated. However it is typical of data that might be available about a chain of stores, for a particular product.
+
+# Data Description
+Get the skim output:
+```{r}
+Carseats %>% skim
+```
+There is no missing data. We can clearly see the three discrete variables (factors). Clearly medium shelf location is by far the most common.
+
+A pairs plot is a good idea, to see correlations and the spread of each data driver and target relative to one another. We will plot first the continuous drivers with `Sales`.
+
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+Carseats %>% select(1:6, 8:9) %>% 
+  ggpairs(progress=FALSE) + 
+  labs(title="Pairs Plot of Sales and Continuous Drivers")
+```
+
+There seems to be a strong negative relation between `Sales` and `Price`  This would be expected from basic economics; as we raise our price, our sales should go down. There is also somewhat of a positive relation between `CompPrice` and `Price`. The others look a lot like blobs.
+
+Now we will plot Sales and the three discrete drivers.
+
+```{r fig.height=10, fig.width=10, message=FALSE, warning=FALSE}
+Carseats %>% select(1, 7, 10:11) %>% 
+  ggpairs(progress=FALSE) + 
+  labs(title="Pairs Plot of Sales and Discrete Drivers")
+```
+
+We can see there are a lot more `Urban` stores, and a lot more `US` stores. Medium `ShelveLoc` seems to be the most common, more than the sum of Good and Bad.
+
+# Modeling with Linear Regression
+
+## First Try with Interactions
+
+First we will fit a simple model with all individual drivers, but we will include also interactions of Advertising and Income, and Price and Age. The formula syntax in R is `Sales ~ . + Income:Advertising + Price:Age`.  This means that we include the nonlinear terms `Income`\*`Advertising`, and `Price`\*`Age`, but not `Income`, `Advertising`, `Price` or `Age`, because they are already chosen with the dot for all columns.
+
+```{r}
+lm.fit = lm(Sales~.+ Income:Advertising + Price:Age , data=Carseats )
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fit %>% glance %>% gt_add_significance()
+```
+
+We have an 87% Adjusted R-squared but two of the continuous drivers, `Population` and `Education`, do not have significant coefficients. 
+
+Observe how the discrete factor drivers are handled in the summary. We see `UrbanYes` and `USYes` with coefficients. These coefficients tell us how much additional sales is generated at an `Urban` facility, all other things equal (0.1402 thousand), and at a `US` facility, -.1576 thousand in `Sales`, all other things equal. This  means that for `Urban` and `US`, the base case, with no additional sales, is `No` (their coefficients would be zero if shown.) The regression measures the extra sales caused by being `Urban`, or by being in the `US`.
+
+We can tell how R encodes the two factors which have two levels, `Urban` and `US`, by using the `contrasts()` function. It's just as I said above. Only the Yes entries get added boost in `Sales` from their coefficients.
+
+```{r}
+Carseats %>% pull(Urban) %>% contrasts
+Carseats %>% pull(US) %>% contrasts
+Carseats %>% pull(ShelveLoc) %>% contrasts
+```
+
+The `ShelveLoc` factor has three levels, and seems to have `ShelveLoc`=Bad as the base case with no added `Sales`.  
+
+A `ShelveLoc`  value of Medium adds 1.953 thousand in Sales, a Good value of `ShelveLoc` adds 4.849 thousand in sales.  Obviously `ShelveLoc` is important!
+
+In addition, the extra nonlinear effect of Price\*Age is estimated at only 0.0001 thousand (10 cents) in Sales, and is not significant, so the nonlinear effect of these two interacting probably can be ignored.
+
+However, the extra nonlinear effect of Income\*Advertising is estimated at  0.0007 thousand (70 cents) in Sales, and is significant.  So the interaction between Income and Advertising contributes to the reduction in error.
+
+It is also important to look at the residual plots.
+
+```{r message=FALSE}
+lm.fit %>% gg_residual_plots()
+```
+
+The residual plots show the following:
+- QQ - just about normal
+- RF - just about zero and pretty even
+- LS - pretty flat at around 0.6 maybe?
+- Histogram - pretty normal, not bad
+
+These tell us that residuals follow the four assumptions quite well, so we should not worry on their account.
+
+## A Measure of Accuracy
+
+Let's compute the root-mean-squared-error (RMSE) of this model using the actual `Sales` values and the predicted mean sales values. The fitted values for the observations in the `Carseats` dataset are already in the `fit` linear regression output object. But we will compute it directly by generating the predictions using `augment()`. We do not need to specify new data to be predicted on. The `rmse()` function comes from `yardstick`, part of `mbadtools`.
+
+Mean square error (MSE) is another popular accuracy measure. It has the same dimensions as the square of the target variable. So does SSE, making them harder to interpret.
+
+```{r}
+tibble(RMSE = lm.fit %>% augment() %>% 
+         rmse(estimate=.fitted, truth=Sales) %>%
+         pull(.estimate), 
+       MSE = RMSE^2)
+```
+
+The RMSE is just under 1 (thousand).
+
+## A Simpler Linear Model
+
+We will try to eliminate the drivers that were not significant in our first regression model, to see if we can reduce the error further. We will leave in the interaction between `Income` and `Advertising`.
+
+```{r message=FALSE}
+lm.fit1=lm(Sales~.+ Income:Advertising - Population - Education - Urban - US, data=Carseats)
+lm.fit1 %>% glance %>% gt_add_significance()
+lm.fit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fit1 %>% gg_residual_plots()
+```
+
+The Adjusted R-squared is now 0.872. It is not very different from before, so we have not lost ground.  And all the coefficients are significant.  The residual plots show that the four assumptions are even better borne out. We have a model we might be interested in using to predict `Sales` in `Carseats.`
+
+3D plots are not in order because there are a lot more than 3 predictors. But we can compute the RMSE as before and see if it has improved.
+
+```{r}
+tibble(RMSE = lm.fit1 %>% augment() %>%
+         rmse(estimate=.fitted, truth=Sales) %>%
+         pull(.estimate), 
+       MSE = RMSE^2)
+```
+
+The RMSE metric is really just a bit better than before. Because our model here has fewer drivers, it is easier to explain and interpret.
+
+# Random Forest, an AI model
+In this section we will compare the linear regression model we just built with a random forest model. Random forests are a popular AI method for prediction, and they can be used for regression or classification.We will compare our best regression above with a random forest AI routine's predictions, just to show it can be done. We use the `randomForest` package available for R. 
+
+The random forest method involves growing a decision tree which figures out which driver to add next, and at what value of the driver it should split the observations into two branches of the tree. It continues till it has built a tree of the size you have specified. That is basic decision tree modeling. 
+
+Then it uses random choices to build more trees. At the end it makes a selection of trees at random and uses the averages to compute the predictions. See [Yiu (2019)](#r1) for a bit more information.  [Latief, Zulaikha. (2020)](#r2) is also a good source.
+
+A Random Forest model is much less interpretable than a linear regression.  That is because it samples the decision trees it creates randomly, in a way we don't see.  Hence if you run it twice you will get different answers for the coefficients.  How do you explain that to a client?
+
+The important internal metric for a random forest model is the `importance()`. From the help for it I include what it says about these metrics. We are doing regression here because the target, `Sales`, is a continuous variable.
+
+> Here are the definitions of the variable importance measures. The first measure is computed from permuting out-of-bag (OOB) data: For each tree, the prediction error on the out-of-bag portion of the data is recorded (error rate for classification, MSE for regression). Then the same is done after permuting each predictor variable. The differences between the two are then averaged over all trees, and normalized by the standard deviation of the differences. If the standard deviation of the differences is equal to 0 for a variable, the division is not done (but the average is almost always equal to 0 in that case).
+
+> The second measure is the total decrease in node impurities from splitting on the variable, averaged over all trees. For classification, the node impurity is measured by the Gini Index. For regression, it is measured by residual sum of squares.
+
+We will do the random forest regression, then show the importance data.  The graph shows the top 6 drivers,and the amount of improvement in MSE (mean squared error) they drive. Importance is an attempt to 'explain' the model, but it is not as good as the coefficients in a linear regression.
+
+```{r}
+set.seed(1234) # so you get the same answers
+rf.fit1 = 
+  randomForest(Sales ~ . + Income:Advertising - Population - Education - Urban - US,
+               data=Carseats, 
+               importance=TRUE)
+randomForest::importance(rf.fit1) %>% as_tibble(rownames="Coefficient")
+varImpPlot(rf.fit1)
+```
+You can see that `ShelveLoc` comes out as very important, and `Price` is almost as important.
+
+We will now compute the RMSE from the random forest model, just like before, by making the predictions on the data and then calculating the RMSE and MSE. 
+
+**There's no `augment` for a model of `randomForest` type***, so ChatGPT gave me some code to simulate it. I had to HACK it to get it to work. I made a function `augment_any` which will handle a few different AI model types with no `augment` function.
+
+```{r}
+source("augment_neuralnet.R")
+augment_any(rf.fit1, Carseats)
+```
+
+```{r fig.height=1, fig.width=5}
+rf_comp = tibble(RMSE = rf.fit1 %>% augment_any(Carseats) %>% 
+         rmse(estimate=.fitted, truth=Sales) %>% pull(.estimate), 
+       MSE = RMSE^2)
+rf_comp %>% gt() %>% tab_header("Random Forest RMSE and MSE")
+```
+
+The RMSE is only .73 (thousand), much better; MSE likewise.
+
+# YVP plots
+Graphing observed vs predicted values, we get the following YVP plots. The dotted line represents exact predictions that match `Sales`.
+
+```{r fig.height=8, fig.width=10}
+grf = rf.fit1 %>% augment_any(Carseats) %>% 
+  ggplot(aes(x=Sales, y=.fitted)) +
+  coord_cartesian(xlim=c(0,20), ylim=c(0,20)) +
+  geom_point() +
+  geom_abline(aes(slope=1, intercept=0), linetype="dotted", color="red") +
+  labs(title="Random forest Sales and predictions")
+
+glr = lm.fit1 %>% augment() %>% # here the standard `augment()` works
+  ggplot(aes(Sales, .fitted)) +
+  coord_cartesian(xlim=c(0,20), ylim=c(0,20)) +
+  geom_point() +
+  geom_abline(aes(slope=1, intercept=0), linetype="dotted", color="red") +
+  labs(title="Linear Regression sales and predictions")
+
+glr / grf
+```
+
+Note that the linear regression predictions are spread around the line about equally at all values of observed, low or high. The line represents when observed `Sales` (from the dataset) is exactly equal to predicted; its slope is 1. 
+
+On the other hand, in the random forest model, the predictions (black) seem to have a bias; predictions are too high for low values of `Sales`, and too low for high values of `Sales`; and if you were to put a straight line through the predicted values for random forest, its slope would be decidedly less than one. Could this be a problem with the random forest routine that has not been diagnosed or explained?
+
+We might have to repeat the random forest experiment many times to find out if this was an idiosyncratic problem, for this run, with this seed, only, or if it is endemic to the random forest approach.  Random forests are just that; they depend on randomness, and therefore are not repeatable with controlled sources of error. 
+
+That is why AI methods are inherently less interpretable.
+
+# Conclusion
+
+Now can you explain to a simple-minded non-technical user why they should use the random forest model rather than the linear one?
+
+# References
+::: {#r1}
+1. Yiu, Tony (2019) Understanding Random Forest: How the Algorithm Works and Why it Is So Effective. *Towards Data Science*, Jun 12, 2019.  https://towardsdatascience.com/understanding-random-forest-58381e0602d2 retrieved November 3, 2021.
+
+::: {#r2}
+2. Latief, Zulaikha. (2020) A Comprehensive Guide To Random Forest In R. *Edeureka!* November 25, 2020. https://www.edureka.co/blog/random-forest-classifier/#What%20is%20Random%20Forest, retrieved November 3, 2021.
+
+::: {#r3}
+3. ISLR (2013) Section 3.6.6 Qualitative Predictors, pages 117-119.
+:::
+
+# Appendix: Random Forests Change
+
+We rerun the random forest routine, two more times, with different seeds, and compare the importances of the variables with the run performed previously.
+
+```{r}
+set.seed(2345)
+rf.fit2 = 
+  randomForest(Sales~.+ Income:Advertising - Population - Education - Urban - US,
+               data=Carseats, importance=TRUE)
+set.seed(3456)
+rf.fit3 = 
+  randomForest(Sales~.+ Income:Advertising - Population - Education - Urban - US,
+               data=Carseats, importance=TRUE)
+```
+
+Now we display the three columns of calculated Importance. They are all different. 
+
+```{r fig.height=.5, fig.width=5}
+tibble(
+  Driver = rownames(randomForest::importance(rf.fit1)),
+  Importance1 = randomForest::importance(rf.fit1)[,1],
+  Importance2 = randomForest::importance(rf.fit2)[,1],
+  Importance3 = randomForest::importance(rf.fit3)[,1]
+) %>% gt_add_significance(digits=2)
+```
+The first column is the driver name, the second is the importance from the first run, the third is the importance from the second run, and the fourth is the importance from the third run.  The values are all different.
+
+An average might give a better estimate; but random forest already runs and samples many trees.
+

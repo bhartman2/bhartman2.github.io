@@ -1,0 +1,190 @@
+---
+title: "Orange Juice Purchases"
+author: "Bruce Hartman"
+date: "2024-11-06"
+output:
+  html_notebook:
+---
+
+# Introduction {-}
+We will perform some analysis on the Orange Juice purchase data from the <code>ISLR2</code> package.
+ <!-- Add a reference [(Hartman, 2004)](#r1). -->
+
+# Packages {-}
+
+Loading the standard packages for this course:
+```{r}
+library(tidyverse) # used to manipulate data and plot
+library(ISLR2) # package contains the data files
+library(ggfortify) # some extra ggplot functions
+library(GGally) # pairs ggplot and other options
+library(skimr) # nice summaries
+library(broom) # neat model summary
+library(gt) # nice displays of printed data
+library(patchwork) # arranging graphs
+library(car) # useful tools for regression analysis
+```
+
+# Data {-}
+
+The orange juice data is in the data package.
+
+```{r}
+data(OJ)
+if(interactive()) help(OJ)
+OJ %>% skim
+```
+
+There are 18 columns two of which are factors.  There are 1070 rows of purchases. Each purchase is either of CH (Citrus Hill) or MM (Minute Maid) juice. The variable Store7 indicates if it is a purchase at Store 7 or not. All observations are complete. The Store variable is numeric, but indicates which store with an integer from 1 to 7. The purchases are dated to a week given by the WeekOfPurchase variable. 
+
+# Data Description {-}
+
+The <code>skim</code> output gives us some idea of the data in the dataset.  We will describe it further.
+
+```{r}
+OJ %>% glimpse
+```
+
+This output is handy for seeing variable names and types, and the size of the dataset, and some example entries.
+
+Let's create a way to page through all the actual  data.
+
+```{r}
+OJ
+```
+
+The display lets you page through the data and scroll left and right to all the columns.
+
+This summary is the old way of getting ranges of variables. It is sometimes handy.
+
+```{r}
+OJ %>% summary
+```
+
+# Data Wrangling {-}
+
+Purchase and Store7 are already factor variables.  R is very good at handling factors, which remember the data, but also encode it into small numbers like 0 and 1 for analysis. But there are several others that have only a few values. 
+
+- Store7 for instance should be a factor; it's just Yes/No.  
+- STORE just indicates which of 5 stores numbered 0 through 4 the purchase was made at. It should be a factor.
+- SpecialCH and SpecialMM seem to be binary (0-1) variables indicating whether there was a special on that brand at the time of thepurchase.
+
+We will make a new data frame OJ1 with the modifications.
+```{r}
+OJ1 = OJ %>% mutate(Store7 = factor(Store7), 
+                    STORE = factor(STORE),
+                    SpecialCH = factor(SpecialCH),
+                    SpecialMM = factor(SpecialMM))
+OJ1 %>% glimpse
+```
+
+- StoreID is a number between 1 and 7. But are all values allowed? Or is this variable just like STORE, with just 5 values.  Are these columns redundant? 
+
+We could just display them side by side and manually check. 
+
+```{r}
+OJ1 %>% select(STORE, StoreID)
+```
+
+But this is boring and prone to errors!! An easy check is to make a 'crosstab' table.
+```{r}
+OJ1 %>% select(StoreID, STORE) %>% table
+```
+You can see that the values in STORE and StoreID line up perfectly, with Store 7 encoded as 0 in STORE.  Store 7 is obviously very busy with purchases. So we probably don't need both variables. 
+
+We are using StoreID elsewhere with the indicator variable Store7. Let's check that purchases with StoreID=7 actually have Store7 set to Yes, and the others not.
+
+```{r}
+OJ1 %>% select(StoreID, Store7) %>% table
+
+```
+
+Perfect match.
+
+Can we reproduce the STORE variable by making StoreID a factor?
+
+```{r}
+f_StoreID = OJ1 %>% pull(StoreID) %>% factor
+table(OJ1$STORE, f_StoreID)
+table(OJ1$StoreID, f_StoreID)
+```
+
+f_StoreID is identical to StoreID. So we will make StoreID a factor.
+
+```{r}
+OJ1 = OJ1 %>%  mutate(StoreID = factor(StoreID))
+OJ1 %>% glimpse
+```
+
+
+# Data Visualization
+
+Let's visualize the data with a ggpairs plot. But it will be very busy. So let's breakit up into the numeric and the factor variables. Let's do just the numeric variables to get correlations and dot plots.
+
+```{r fig.height=12, fig.width=12}
+OJ1 %>% select(where(is.numeric)) %>% ggpairs(progress=F)
+```
+
+Now let's do only the non-numeric variables.
+
+```{r fig.height=12, fig.width=12}
+OJ1 %>% select(-where(is.numeric)) %>% ggpairs(progress=F)
+```
+
+# More Viz
+
+Let's compare sale prices of the two products for each purchase. 
+```{r}
+OJ1 %>% ggplot(aes(SalePriceMM, SalePriceCH)) +
+  geom_point(aes(SalePriceMM, SalePriceCH, color=Purchase), size=2) +
+  geom_abline(aes(slope=1, intercept=0))+
+  theme_bw()
+```
+
+Each color of dot is equally above or below the line. That indicates the SalePrice is not the deciding factor.  
+
+Lets try the same graph with the discount percents at  the time of purchase.
+
+```{r}
+# OJ1 %>% glimpse
+OJ1 %>% ggplot(aes(PctDiscMM, PctDiscCH)) +
+  geom_point(aes(PctDiscMM, PctDiscCH, color=Purchase), size=2,
+             position="jitter") +
+  geom_abline(aes(slope=1, intercept=0))+
+  theme_bw()
+```
+
+This graph reveals that **discounts matter a lot**. While some purchases of CH are made even when there is a discount on MM but not CH, and vice versa, there are also many purchases of the product at a discount.
+
+Let's compare purchase prices when there is a special.
+
+```{r}
+bCH = ggplot(OJ1) +
+  geom_boxplot(aes(SpecialMM, SalePriceMM, color=Purchase)) +
+  theme_bw()
+bMM =ggplot(OJ1) +
+  geom_boxplot(aes(SpecialCH, SalePriceCH, color=Purchase)) +
+  theme_bw()
+
+bCH | bMM
+```
+
+Interesting?
+
+```{r fig.height=8, fig.width=12}
+ggplot(OJ1) +
+  geom_bar(aes(WeekofPurchase, fill=Purchase), position=position_dodge2(), width=.80) +
+  theme_bw()
+```
+MM has steady sales through the weeks. CH has more peaks and valleys, as well as larger sales, especially in later weeks.
+
+# Research Problem {-}
+
+I'm dropping this one fornow.
+# Analysis {-}
+```{r}
+# OJ1 %>% glimpse
+OJ1 %>%
+```
+
+

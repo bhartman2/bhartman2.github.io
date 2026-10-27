@@ -1,0 +1,303 @@
+---
+title: Ch03 Lab p123
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+  email: bhartman@stfrancis.edu
+date: 2026-10-15 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We follow Chapter 3 Lab Section 6.6 of [ISLR](#r1), in an R Notebook using modern tidyverse methods. The idea is to show how a student might respond to the assignment.
+---
+
+# Introduction
+This notebook goes through the Lab for [Chapter 3 of the text](#r1), but adds some interesting things to do with output and analysis.  
+
+# Packages
+The `ISLR2` package has the data. But mostly they are our standard packages.
+```{r}
+library(ISLR2) # for the course data
+library(mbadtools, quietly = TRUE)
+```
+
+# Section 3.6.2
+
+## Load Data
+This problem requires the `Boston` data from `ISLR2`.
+```{r data62}
+data(Boston)
+Boston
+Boston %>% skim
+```
+There is no missing data.
+
+## Linear Regression with 1 Driver
+The `lm()` function does regression. In the formula, the tilde ~ separates the target from the driver(s).
+```{r}
+lm.fit=lm(medv ~ lstat, data=Boston)
+```
+
+The modern way to report the results uses `tidy`: the coefficients of the straight line that is found to be the best fit. Reporting the overall fit the modern way uses `glance`. I like the `gt_add_significance()` function to add significance color and specify decimal places for numbers with the 'digits' parameter (defaults to 4).
+```{r}
+lm.fit %>% glance() %>% gt_add_significance()
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The old way, `summary`, gives us much of this but we can't pull out the numbers easily.
+```{r}
+lm.fit %>% summary
+```
+
+`names()` tells us what else is available in the lm object `lm.fit`. We don't use most of it.
+```{r}
+names(lm.fit)
+```
+
+## ALWAYS PLOT THE RESIDUALS
+
+```{r}
+lm.fit %>% gg_residual_plots()
+```
+These four plots are very useful in deciding if the regression is any good. It's essential to look at these plots. We will study them in more detail elsewhere.
+
+## Prediction
+Modern practice uses `augment()` to produce predictions and residuals.
+Choose 3 specific values of `lstat` 5,10,15 and make predictions of `medv` with confidence intervals. The new data to predict at must be in a data frame. The 'interval' parameter is set to "confidence" to get confidence intervals for the mean prediction, and to "prediction" to get prediction intervals for a single observation.
+
+```{r}
+lm.fit %>% augment(newdata=data.frame(lstat=c(5,10,15)),
+                   interval="confidence")
+```
+
+Confidence intervals of type 'confidence' apply to trying to predict the mean value of a collection of observations at 5, 10, 15 respectively.
+
+The 'prediction' intervals are much wider than the confidence intervals. They apply to predicting a single observation at that level of the driver.
+
+```{r}
+lm.fit %>% augment(newdata=data.frame(lstat=c(5,10,15)),
+                   interval="prediction")
+```
+
+Why are the prediction intervals larger than the confidence intervals?
+"Confidence" intervals are that the mean of a sample of `medv` at that `lstat` value
+(5,10,15) will be what it comes out;  "prediction" intervals are that a single
+sample of `medv` at that `lstat` value will be the fitted value.
+
+## Plot with regression line
+The modern way I prefer you learn to use, with layered plots using `ggplot`. Notice you can set figure size in the chunk options, and you can set the size of the points and the line width. The `geom_abline()` function draws a straight line with the intercept and slope from the regression coefficients grabbed with the `coef` function.
+
+```{r fig.height=7, fig.width=10}
+ggplot(Boston) +
+  geom_point(aes(x=lstat, y=medv)) +
+  geom_abline(aes(intercept=coef(lm.fit)[1], 
+                  slope=coef(lm.fit)[2]), 
+              color="red", linewidth=1.7)
+```
+
+What do you think of this regression?
+
+## Residuals: 4 plots
+This part is very very important. The test of a regression quality is the behavior of the residuals, not the R2, p-values, etc from the summary.
+
+We do it the modern way with `gg_residual_plots()`, default is the 4 plots we want.
+```{r}
+lm.fit %>% gg_residual_plots() # from `mbadtools`
+```
+
+## Analysis of Plots
+
+The curved blue line in the Residual plot upper left is an indication the residuals are not under
+control.It should be a straight line but here they vary with the fitted values. They also do not seem to average 0, marked with the blue line. A transform might be required to fix this curved distribution.
+
+The upper right QQ plot shows residuals are not normally distributed; especially
+at large quantiles. The dots should be on the dotted line everywhere.
+
+The SL plot at lower left shows that size of residuals varies with the fitted value. It should be a straight line, preferably low.
+
+The histogram plot lets us judge the normality of the residual distribution. It's skewed a bit.
+
+## Studentized residuals
+
+These are useful because they represent the result of computing the residual from a regression with each point removed. They are termed 'deleted' residuals. That's the difference between the actual observed value of the target and the fitted estimate of the value from a regression with that observation removed. And the values are 'standardized', that is, z-scores are computed for each one. The `rstudent()` function computes them.
+
+That helps identify true outliers from points that are just different. Reference on studentized residuals:  [Studentized Residuals](#r2)
+```{r message=FALSE}
+ggplot(augment(lm.fit)) + 
+  geom_point(aes(x=.fitted, y=rstudent(lm.fit))) +
+  geom_smooth(aes(x=.fitted, y=rstudent(lm.fit)), 
+              method="loess", se=FALSE)
+```
+
+# Outliers
+
+We may care about outliers-- data that pull the regression away from what it "should" be
+might be mistakes in data, or just very very unusual observations for some reason or unknown
+Should we exclude them to make the fit better?
+
+Here's a discussion: [Steiger (n.d.)](#r3).
+
+Leverage is computed for us in `augment` in the `.hat` column.
+```{r}
+ggplot(lm.fit %>% augment %>% mutate(n=row_number())) + 
+  geom_point(aes(x=n,y=.hat)) 
+```
+
+Which one has the largest hat value (leverage)?
+```{r}
+which.max(lm.fit %>% augment %>% pull(.hat))
+```
+
+Observation 375 is the maximum hat-value (highest leverage).
+
+Plot and mark the largest one. The code shows how you mark and label specific points on a graph with a boxed label.
+
+```{r warning=FALSE}
+d = lm.fit %>% augment %>% mutate(n=row_number())
+Z = which.max(d$.hat)
+Y = d$.hat[Z]
+ggplot(d, aes(x=n,y=.hat)) + 
+  geom_point() +
+  geom_point(aes(x= Z,
+                 y= Y),
+             color="red", shape=7, size=3) +
+  annotate('text', x=Z, y=Y, 
+           label=Z,
+           hjust=2, vjust=0, size=3,
+           color="red", fontface="bold")
+```
+
+Leverage measures how big a contribution an observation's predictors make to pulling the regression line off. This is only one way an outlier can affect the regression line and induce more error into the regression.
+
+# Section 3.6.3
+
+## Multiple Linear Regression
+Multiple regression from [3.6.3, p 127](#r1):  make a regression with two predictors, `lstat, age`. This is called MLR or multiple linear regression.
+
+```{r message=FALSE}
+lm.fit1 =lm(medv~lstat+age ,data=Boston )
+lm.fit1 %>% glance %>% gt_add_significance()
+lm.fit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fit1 %>% gg_residual_plots()
+```
+
+Now the tidy shows both independent variables.
+
+Extremely multiple linear regression, include all 13 drivers of `medv`.
+```{r message=FALSE}
+lm.fit2 =lm(medv~. ,data=Boston ) #all 13 variables
+lm.fit2 %>% glance %>% gt_add_significance()
+lm.fit2 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fit2 %>% gg_residual_plots()
+```
+
+## Testing Multicollinearity
+
+Multicollinearity is a problem in MLR. It means that two or more predictors are highly correlated, and thus they are not independent. This can cause problems with the regression coefficients, making them unstable and hard to interpret.`car` is a very useful package for regression analysis. It has an easy test for multicollinearity. `car::vif()` is the most useful and easy test for multicollinearity, a very important problem with MLR but not present in simple one-predictor linear regression.
+
+```{r vif}
+lm.fit2 %>% car::vif() #variance inflation factor measures how much each independently if deleted would change the variance
+```
+
+We will learn to read a `vif` table later, but over 10 is really bad multicollinearity. `tax, rad` are worst here.
+
+Eliminate these two, and see if the regression changes much. We'll use `summary` for a quick glance.
+```{r}
+cat("Boston MLR with all 13 drivers\n")
+lm.fit2 %>% summary 
+lm.fit3 = lm(medv~.-tax-rad, data=Boston)
+cat("Boston MLR with tax and rad removed\n")
+lm.fit3 %>% summary
+```
+
+Comparing the two regressions, we can see that Adjusted R-squared has not changed much, but coefficients have changed. for instance, `nox` went from -18 to -16, and `rm` went from 3.6 to 4.
+
+# Section 3.6.5
+Nonlinear transforms of the drivers are sometimes useful. We might suspect that the dependence of `medv` on `lstat` might not be linear. A Tukey test confirms this.
+```{r}
+lm(medv ~ lstat, data=Boston) %>% Tukey_test(fmt="summary")
+```
+The p-value is almost 0, so we have to accept the alternate hypothesis that lstat dependence is more likely quadratic (squared) than linear.
+
+Again we can use `lm` to model polynomial transforms. Note the `I()` function (for identity) which makes sure what's inside it is used exactly in the formula. There's also  function called `poly()` which can also be used for power transformations. 
+```{r}
+lm.fit_2 = lm(medv ~ lstat +I(lstat ^2), data=Boston)
+lm.fit_2 %>% summary
+```
+Compare to a linear regression on `lstat`: 
+```{r}
+anova(lm.fit, lm.fit_2)
+```
+
+```{r}
+lm.fit_2 %>% gg_residual_plots()
+```
+
+To fit higher powers, it's better to use the `poly()` function.
+```{r}
+lm.fit5 = lm(medv ~ poly(lstat, 5), data = Boston)
+lm.fit5 %>% summary
+```
+
+The R-squared keeps going up as we add more predictors, but that does not indicate a better regression.  Look at the YVP plot:
+```{r}
+lm.fit5 %>% gg_residual_plots(items=8)+ 
+  geom_smooth(data=lm.fit5 %>% augment, aes(x=medv, y=.fitted),
+              method="loess", formula='y~x', se=TRUE)
+```
+See the wave in the fitting? That's from the powers beyond 2.
+
+You can transform using the `log()` function as well.
+```{r}
+lm.fit_log = lm(medv ~ log(lstat), data = Boston)
+lm.fit_log %>% summary
+lm.fit_log %>% gg_residual_plots(items=8)
+```
+
+# Section 3.6.6
+
+## Qualitative drivers
+We change to the `Carseats` data. There are several qualitative drivers.
+```{r}
+data(Carseats)
+Carseats %>% skim
+```
+
+The factor variables are the qualitative ones. They are listed in `skim()` as factors. Factor variables carry both the text value and a numeric value that allows the regression to apply it as a dummy variable to select that effect only. today we need to add the `C` function which sets the contrasts for the data.
+```{r}
+Carseats %>% pull(ShelveLoc) %>% C %>% contrasts
+Carseats %>% pull(Urban) %>% C %>% contrasts()
+Carseats %>% pull(US) %>% C %>% contrasts()
+```
+
+A full regression with all variables shows the coefficients for the factors. Notice that there will be 3 for `ShelveLoc` because it has 3 levels. 
+
+Regression including the interactions of Income with Advertising, and Price with Age is done as follows.
+```{r message=FALSE}
+lm.fitcar =lm(Sales~.+ Income:Advertising + Price:Age ,data=Carseats )
+lm.fitcar %>% glance() %>% gt_add_significance()
+lm.fitcar %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+lm.fitcar %>% gg_residual_plots()
+```
+
+Notice how the coefficients of the factors indicate precisely which are being represented. For instance in the tidy output, the `ShelveLocGood` coefficient is the difference between the `Good` level of `ShelveLoc` and the baseline level, which is `Bad`. The `UrbanYes` coefficient is the difference between the `Yes` level of `Urban` and the baseline level, which is `No`. The `USYes` coefficient is the difference between the `Yes` level of `US` and the baseline level, which is `No`.
+
+# Conclusion
+We have worked the exercises in the Ch03 Lab, and have also found a new way to make a pretty result from a regression using the `gt_add_significance()` function, and make residual plots using the `gg_residual_plots()` function, both from package `mbadtools`. 
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 3 Section 3.6.3 Multiple Linear Regression, page 113ff.
+
+::: {#r2}
+2. [Studentized Residuals](https://en.wikipedia.org/wiki/Studentized_residual) Wikipedia, *Studentized Residuals*. (https://en.wikipedia.org/wiki/Studentized_residual)
+
+::: {#r3}
+3. [Steiger (n.d.)](http://www.statpower.net/Content/313/Lecture%20Notes/Outliers.pdf) James H. Steiger (n.d.) *Outliers, Leverage, and Influence*. Lecture Notes. (http://www.statpower.net/Content/313/Lecture%20Notes/Outliers.pdf)
+
+
