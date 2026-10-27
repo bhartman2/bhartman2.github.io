@@ -1,0 +1,293 @@
+---
+title: Ch04 Confusion and ROC
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-11 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+  template: cosmo
+  highlight: tango
+abstract: |
+  We investigate the Receiver Operating Characteristic Curve (ROC) for an unbalanced classification problem. 
+---
+
+# Introduction {-}
+We present the Receiver Operating Characteristic Curve (ROC) and its relation to the Confusion Matrix. First you should be familiar with the analysis in [Classification and Confusion](#r3).
+
+# Packages {-}
+Loading the standard packages for this course and some others.
+```{r}
+library(ISLR2) #package contains the data files, but not this one
+library(ROCR) # ROC functions
+library(pROC) # obtain function ggroc()
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+See [Robin et al., 2011](#r4) for more information about `pROC`.
+
+# Data
+
+```{r}
+data(Default)
+Default %>% skim
+```
+
+# Fitting a Logistic Regresssion
+
+Use the Logistic Regression model, with a training dataset and a test dataset. We train the algorithm on one part and test it by making predictions on the other part. Since there are `r nrow(Default)` observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+# Validation Datasets
+
+In classification we should set up a training dataset and a test dataset by partitioning the full dataset. Then we can train the algorithm on one part and test it by making predictions on the other part. Since there are 10000 observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+`tidymodels` provides the best way to do this.
+
+```{r}
+# takes first half of data
+split <- initial_time_split(Default, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(Default$default)
+contrasts(Default$student)
+
+D.train=train_data
+D.test=test_data
+```
+
+# Logistic Regresssion
+
+We will try Logistic Regression, a common classification technique, and one that is relatively easy to understand.
+
+## Model
+Specify the model structure using `tidymodels`. This can be reused each time we run logistic regression.
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+## Training
+Now we can run or 'train' logistic regression on the `D.train` part of the dataset.  We will try using `balance` and `student` status to predict `default`.
+
+```{r logistic, echo=TRUE}
+glm.logit <- log_spec %>%
+  fit(default ~ balance + student, data = D.train)
+
+glm.logit %>% extract_fit_engine() %>% summary
+glm.logit %>% glance %>% gt_add_significance() %>%
+  tab_header(title="glance Overall")
+glm.logit %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="tidy Coefficients")
+```
+
+The `summary` and `tidy` show that both drivers are significant. 
+
+## Predictions {-}
+
+Next we make predictions for the `D.test` data using the model we developed, using the `predict()`  function in R, with the "response" type.
+
+These predictions are probabilities, and we turn them into "No"/"Yes" values by assuming that each is equally likely; the probability of 0.5 is the cutoff. That's a problem here! They aren't equally likely. 
+
+```{r prior}
+# prior probability in dataset
+prior.train = D.train %>% group_by(default) %>% 
+  summarize(n_default=n()) %>% 
+  mutate(fraction = n_default/sum(n_default))
+prior.train = prior.train$fraction[prior.train$default=="No"] 
+prior.train
+```
+
+The 'prior probability' of default (from the original data) is actually quite small, .035; so the priors are .9650 for No and .035 for Yes. 
+
+```{r}
+# probabilities                 
+probs <- predict(glm.logit, new_data = D.test,
+                 type = "prob")
+preds.class.prior = case_when(
+  probs$.pred_Yes > prior.train ~ "Yes",
+  .default = "No") %>% factor
+preds.class.prior %>% table
+```
+
+## Results and Metrics
+
+We compare the results by making a table with the "states of nature" (truth, from the dataset!) in the columns and the predictions in the rows. The columns are the values of default in the test dataset; the rows are the values of `preds`, the predictions, made by the model. Each cell of the table tells us how many observations fell into each category.
+
+```{r}
+t = data.frame(truth=D.test$default, 
+               estimate = preds.class.prior)
+```
+
+We use `conf_mat()` to produce a *confusion matrix*, and a summary to present the different metrics for classification.
+
+```{r}
+cmlog = t %>% conf_mat(truth, estimate)
+cmlog
+cmlog %>% summary
+```
+
+# Business Question
+
+The business question here is whether this model can help the bank by predicting defaults. 
+
+We have correctly predicted "No" 4842 times, and we correctly predicted "Yes" 3 times.  We predicted default="Yes" 0 times when in reality there was no default. And we predicted "No" 155 times when there was actually a default.
+
+# ROC Curve
+
+An ROC curve can tell us more about the model. It's a graphical metric.
+
+The ROC is short for 'receiver operating characteristic'. 
+
+The ROC curve is created by plotting the true positive rate (TPR) against the false positive rate (FPR) at various threshold settings. The true-positive rate is also known as **Sensitivity**, __recall__ or __probability of detection__ in machine learning. The false-positive rate is also known as probability of false alarm, or alpha, and can be calculated as (1 − **Specificity**). 
+
+It can also be thought of as a plot of the power as a function of the Type I Error (alpha) of the decision rule (when the performance is calculated from just a sample of the population, it can be thought of as estimators of these quantities). The ROC curve is thus the sensitivity as a function of fall-out. 
+
+In general, if the probability distributions for both detection and false alarm are known, the ROC curve can be generated by plotting the cumulative distribution function (area under the probability distribution from minus infinity to infinity up to the discrimination threshold) of the detection probability in the y-axis versus the cumulative distribution function of the false-alarm probability on the x-axis.
+
+## `tidymodels` plot
+
+We trained the logit regression above in `glm.logit`, and computed the probabilities in `probs`. Plot the curve for the test data predictions.
+
+```{r}
+# Combine the true `default` status with the predicted probabilities.
+roc_data <- bind_cols(D.test %>% select(default),
+                      probs)
+# Calculate the ROC curve data and plot it
+roc_plot <- roc_data %>% 
+  roc_curve(truth = default, .pred_No) %>% 
+  autoplot() +
+  labs(title = "ROC Curve for Default Prediction",
+       subtitle = "Model performance, D.test, all thresholds")
+# make the plot with no frills
+roc_plot
+```
+
+A fancier version with `ggplot` avoids the simpler `autoplot`.
+
+```{r}
+# Calculate the ROC curve data and plot it manually with ggplot2
+roc_plot <- roc_data %>% 
+  roc_curve(truth = default, .pred_No) %>% 
+  # Map 1-specificity to X, sensitivity to Y, and color by threshold
+  ggplot(aes(x = 1 - specificity, 
+             y = sensitivity, 
+             color = .threshold)) +
+  geom_path(linewidth = 1) + 
+  geom_abline(lty = 2, 
+              color = "gray50") + # Adds the diagonal reference line
+  coord_equal() + # Keeps the plot square
+  scale_color_viridis_c() + # Adds a nice continuous color scale
+  labs(
+    title = "ROC Curve for Default Prediction",
+    subtitle = "Model performance, D.test, colored by threshold",
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    color = "Threshold"
+  ) +
+  theme_bw()
+
+roc_plot
+```
+
+## `ROCR` package
+[Reference 1](#r1) gives a way to do it with the `ROCR` package but it can be easily done without. 
+
+We predict the probabilities to all observations in the `D.test` data set. 
+```{r predict for ROC}
+predict0 = predict(glm.logit, new_data = D.test,
+                   type="prob")
+```
+
+Apply two functions from the ROCR library to get the data in proper form for the plot.
+```{r prepare ROC}
+ROCRpred0 <- prediction(predict0$.pred_Yes, D.test$default)
+ROCRperf0 <- performance(ROCRpred0, 'tpr', 'fpr')
+```
+
+There are lot of possible plots. Some of the machinery is documented at [Sing et al. (n.d.)](#r5)
+
+```{r}
+plot(ROCRperf0, avg= "threshold", colorize=TRUE, lwd= 3,
+     main= "... Precision/Recall graphs ...")
+```
+
+[Reference 1](#r1) tells you how to fancy up a ROCR plot. 
+```{r plot ROC}
+opar=par(pty="s") # square plot
+plot(ROCRperf0, colorize=TRUE, 
+     main="ROCR curve D.train data LR prediction\nA positive outcome is no default",
+     xlim=c(0,1), ylim=c(0,1) )
+grid(nx=NULL)
+abline(0,1, lty="dashed", col="green")
+points(0,1, pch=20, col="green", cex=3)
+text(0.18,1,"Perfect")
+text(.5,.45, "Line of no discrimination", srt=45)
+par(opar)
+```
+
+## ROC with `pROC` {#g1}
+
+Following [Reference 2](#r2), we replicate the plot using `ggplot` techniques, using the package `pROC` to create the plot object; be sure to install it first. 
+
+```{r rocplot, message=FALSE, warning=FALSE}
+library(pROC) # obtain function ggroc()
+p = predict(glm.logit, new_data=D.test, type="prob")
+g = D.test$default
+rocobj = roc(g, p$.pred_No) #define object to plot
+# plot
+rocobj %>% ggroc(legacy.axes=TRUE) +
+  geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), 
+               color="green", linetype="dashed") +
+  #trial and error for the angle
+  annotate("text", x=.45, y=.5, 
+           label="Line of no discrimination", angle=30) + 
+  geom_segment(aes(x=0, xend=0, y=0, yend=1), color="green") +
+  geom_segment(aes(x=0, xend=1, y=1, yend=1), color="green") +
+  #trial and error for the nudge_x
+  annotate("text", x=0, y=1, label="Perfect") + 
+  labs(x="False Positive Rate (1-Specificity)", 
+       y="True Positive Rate (Sensitivity)",
+       title="ROC curve, legacy layout") +
+  theme_bw()
+```
+# AUC with `tidymodels`
+AUC (`auc`) is an important comparison metric. It's the area under the ROC curve!
+```{r}
+# Calculate AUC using tidymodels
+roc_data %>% 
+  roc_auc(truth = default, .pred_No)
+```
+Perfect prediction would be 1, and no better than random would be .5.
+
+# Conclusion {-}
+The ROC curve is a good way of seeing the tradeoff between True Positive Rate (Sensitivity) and False Positive Rate (1 - Specificity).
+
+The area under the curve (AUC) is an important comparison metric.
+
+# References {-}
+::: {#r1}
+1. [ROC](https://en.m.wikipedia.org/wiki/Receiver_operating_characteristic)
+
+::: {#r2}
+2. [ROC with ggplot](https://www.statology.org/roc-curve-ggplot2/)
+
+::: {#r3}
+3. [Classification and Confusion, 2024](https://learn.stfrancis.edu/courses/1192468/files/65163855?wrap=1), available in Canvas Course MBAD640.
+
+::: {#r4}
+4. Xavier Robin, Natacha Turck, Alexandre Hainard, Natalia Tiberti, Frédérique
+  Lisacek, Jean-Charles Sanchez and Markus Müller (2011). pROC: an open-source
+  package for R and S+ to analyze and compare ROC curves. BMC Bioinformatics, 12, p.
+  77.  DOI: 10.1186/1471-2105-12-77 <http://www.biomedcentral.com/1471-2105/12/77/>
+
+::: {#r5}
+5. Tobias Sing, Oliver Sander, Niko Beerenwinkel, Thomas Lengauer. (n.d.) ROCR: visualizing classifier performance in R. ROCR::ROCR Vignette. <https://ipa-tys.github.io/ROCR/articles/ROCR.html>
+  
+

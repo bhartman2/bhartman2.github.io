@@ -1,0 +1,239 @@
+---
+title:    Ch05 Simple Classification Validation
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2025-08-18 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+abstract: |
+  We solve Section 5.1.1 of the text showing validation applied to a simple classification.
+---
+
+# Introduction
+
+We work Section 5.1.1 from [the textbook](#r1).
+
+# Packages
+
+First we load the relevant packages to our notebook session.
+
+```{r}
+library(glmnet) # for ridge and lasso
+library(ISLR2) #package contains the data files, but not this one
+library(mbadtools) # used to manipulate data and plot
+```
+
+# Data
+
+We load the `Advertising` data from the csv file using Import Dataset, and preserve the code to load it here.
+
+```{r}
+library(readr)
+Advertising <- read_csv("Advertising.csv")
+```
+
+# Data Display
+
+```{r}
+Advertising %>% skim
+Advertising %>% glimpse
+data=Advertising #copy the data set to a new name
+```
+
+There are 200 observations and 5 columns. The first column just identifies each observation. There are no missing entries.
+
+# Validation
+
+Validation involves taking a random sample of the data to train a model on, and then testing the model against different data. We have to set up a training and test dataset from the 200 observations we are given in Advertising.  
+
+Why do we do this? We want a model we select to be **robust**. That means it would be good at giving predictions on data it has not seen before.  In validation we simulate that, by testing on different data from what we trained on.
+
+# Set Seed
+
+We do this whenever we need to do random sampling. If we don't do it, we get
+different results every time we run the code.   For creating a sample notebook, we want the results to be reproducible by someone else.
+
+```{r}
+set.seed(1)
+```
+
+# Create train and test records
+
+We sample 100 random numbers without replacement from the 200 (for the 200 observations in the dataset).
+
+```{r}
+# choose 100 random numbers from 1 to 200
+train = sample(200, 100)
+train
+```
+
+The test data will be the row numbers not in the vector `train`.
+
+# Make a category variable
+
+We will classify variable `Sales` from a continuous variable into a category variable of
+Low and High Sales. There are a lot of ways to do this and here is one. We make a 0-1 variable for Low/High sales. 1 is High Sales and 0 is Low Sales, 1 is bigger than mean, 0 is lower than mean.
+
+Every ad is above average!!!!????? Lake Wobegone advertising.
+
+The new column `SalesType` will be the classification variable, and will be 0 or 1. It checks whether data$Sales is larger than or equal to the mean, a logical (TRUE-FALSE) result, and multiplies it by 1 to make it a number, 0 or 1.
+
+```{r}
+data$SalesType = (data$Sales>=mean(data$Sales))*1
+```
+
+# Create train and test data
+
+Separate data into test and train datasets.
+
+```{r}
+testdata = data[-train,]
+traindata =data[train,]
+```
+
+Look them over.
+
+```{r}
+traindata
+testdata
+```
+
+# Logistic regression to predict SalesType
+
+We will use logistic regression to predict Low and High Sales. We run the classification regression using only the `TV` driver, on the training data to get the 'coefficients' to make the predictions.
+
+```{r}
+model1 = glm(SalesType ~ TV, data=traindata, family = binomial)
+summary(model1)
+```
+
+# Prediction for test data
+
+Remember we trained the logistic regression on the `traindata`. That is in `model1`. But we use `model1` to predict on the test data! That is what we mean by validation!!!  We use the `predict` function to get the predictions for test data. There is no `augment` function for `glm`.
+
+```{r}
+model1.prediction = predict(model1, data=testdata, type="response")
+```
+
+The `model1.prediction` is now a probability, we classify it as High (1) if the
+probability >= 0.5. This corresponds to assuming that `SalesType` is equally
+likely(in the absence of any information) to be Lo or HI. This is called the
+prior probability of Low or High sales. We could also do it like this, which would be easier to read and explain.
+
+```{r}
+model1.prediction.type = case_when(model1.prediction >= 0.5 ~1, .default=0)
+```
+
+# Make a crosstab
+
+We put the results into a table of Predicted (rows) and Observed (columns). Order in the `table()` function matters. We label the predicted and observed, with the 'dnn' parameter. It's nice to add the sums of the rows and columns.
+
+```{r}
+tab = table(testdata$SalesType, model1.prediction.type, dnn=c("Observed","Predicted")
+      , deparse.level = 2)
+tab %>% addmargins
+```
+
+This structure is often called a confusion matrix, frequently used in classification. 
+```{r}
+cm = conf_mat(
+  data.frame(Salestype=as.factor(testdata$SalesType),
+             Prediction=as.factor(model1.prediction.type)
+             ),
+  truth=Salestype, estimate=Prediction)
+cm
+```
+
+# Prediction Error
+
+Now we see what error we made. We can use the mean value of the cases where
+Predicted==Observed, because they are 0-1 variables. It would be more
+complicated if they were other types of data. In the `yardstick` package, part of `mbadtools`, we have generic functions to compute metrics like `accuracy`.
+
+```{r}
+model1.prediction.error = mean(model1.prediction.type != testdata$SalesType)
+model1.prediction.error
+a1 = accuracy_vec(factor(testdata$SalesType),
+             factor(model1.prediction.type)
+             )
+1-a1 # the error will be 1 - accuracy
+```
+
+If we want to know how often the prediction was right, we can compute the *accuracy*, which is given by the formula
+
+```{r}
+model1.prediction.accuracy = mean(model1.prediction.type == testdata$SalesType)
+a1
+```
+
+It tells us the prediction of the test result was right 56% of the time. We can speculate as analysts whether this result is good enough to become a reliable method for the business. 
+
+Or we can do this and get lots more metrics.
+```{r}
+cm %>% summary()
+```
+
+
+# Another LR
+
+We will use a different logistic regression to predict Low and High Sales. This one uses `TV` and `Radio`.  Run it on `traindata` to get `model2.`
+
+```{r}
+model2 = glm(SalesType ~ TV + Radio, data=traindata, family = binomial)
+summary(model2)
+```
+
+# Prediction and accuracy calculation
+
+Use the `model2` and `predict` function to get prediction for test data.
+
+```{r}
+# predictions
+model2.prediction = predict(model2, testdata, type="response")
+model2.prediction.type = case_when(model2.prediction >= 0.5 ~ 1, .default = 0)
+# table
+tab2=table(model2.prediction.type, testdata$SalesType, dnn=c("Predicted","Observed")
+      , deparse.level = 2) 
+tab2 %>% addmargins
+# confusion matrix
+cm2 = conf_mat(
+  data.frame(Salestype=as.factor(testdata$SalesType),
+             Prediction=as.factor(model2.prediction.type)
+             ),
+  Salestype, Prediction)
+cm2
+# accruacy
+model2.prediction.accuracy = mean(model2.prediction.type == testdata$SalesType)
+cat("\nAccuracy: ", model2.prediction.accuracy)
+cat("\n")
+accuracy_vec(factor(testdata$SalesType), factor(model2.prediction.type))
+# confusion matrix metrics
+cm2 %>% summary()
+```
+
+The prediction accuracy is much higher here. Now the prediction error is only 5%. Adding the second predictor made a big difference.
+
+Balanced accuracy is another frequently used metric. We could see it in the metrics above.
+```{r}
+bal_accuracy_vec(factor(testdata$SalesType), factor(model2.prediction.type))
+```
+
+# Conclusion
+
+The second model appears to do quite well on the test data. It might be a candidate for production use.
+
+We learned how to run and evaluate a classification regression using a validation strategy. We chose 50% of the data for training the model, and then tested on the other half.
+
+This is a simple picture of how to improve robustness by selecting a more robust model that performs better on data it has not been trained on.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 5: Section 5.1.1, page 176-177.
+
+::: {#r2}
+2. [Confusion matrix discussion](https://learn.stfrancis.edu/courses/1152090/modules/items/11903204)

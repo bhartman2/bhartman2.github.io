@@ -1,0 +1,336 @@
+---
+title: Ch04 UCLA Logistic FAQ
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-11 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: readable
+  highlight: tango
+abstract: |
+  We follow a discussion from UCLA on logistic regression. We try to use modern `tidyverse` and `tidymodels` methods when possible on a UCLA dataset.
+---
+
+# Introduction
+This set of examples is taken from [Reference 1](#r1).  The idea is to explain the concepts of conditional probability and especially the 'odds' terminology in logistic regressions. 
+
+The term is often used, but you have to be a gambler as well as a mathematician to understand it without instruction.
+
+# Packages
+We load the required packages.
+
+```{r}
+library(ISLR2) #package contains the data files
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Data
+I downloaded the demonstration file from the Canvas site, so it is in my work folder. I then used the Import Dataset tab in the Environment panel. Read [Reference 1](#r1) for the data descriptions.
+```{r}
+library(readxl)
+UCLASample <- read_excel("UCLASample logistic regr.xlsx")
+sample = UCLASample
+```
+
+There are 200 observations. There are 6 numeric variables, and no missing data. Two of the variables, `female` and `hon` (for honors) are really categorical, being 0-1 (binary) variables. `femalexmath` is the product of `female` and `math` (the score on the math unit) and so represents the interaction of female and math.
+
+# Data Description
+Here is the dataset.
+```{r}
+sample
+sample %>% skim
+```
+
+How many honors are there?
+
+```{r}
+sample %>% group_by(hon) %>% summarize(Honors=n())
+```
+There are 49 honors, 151 no honors.
+
+# Make factors
+```{r}
+# Convert 'hon' to a factor before modeling
+sample <- sample %>%
+  mutate(hon = as.factor(hon),
+         female = as.factor(female))
+sample %>% skim(where(is.factor))
+```
+
+# Logistic regression with no drivers
+
+This gives the base or priors of honors without considering any other driver. Display crosstabs with margins.
+
+```{r}
+addmargins(table(sample[,c("hon")])) 
+```
+
+# Logistic regression with a single dichotomous driver
+
+```{r}
+addmargins(table(sample[,c("female","hon")])) #display crosstabs with margins
+```
+
+# Logistic Regression Model
+Specify the model structure using `tidymodels`. This can be reused each time we run logistic regression.
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+# Logistic Regression - one discrete variable
+```{r}
+glm_fit1 <- log_spec %>%
+  fit(hon ~ female, data = sample)
+
+glm_fit1 %>% extract_fit_engine() %>% summary
+glm_fit1 %>% glance %>% gt_add_significance() %>%
+  tab_header(title="A glance at hon~female")
+glm_fit1 %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="Tidy coefficients for hon~female")
+```
+
+The tidy output shows the coefficient of `female` is not significant, with a p-value of .08.
+
+Look at some measures. Or look at the `glance` output.
+
+```{r}
+glm_fit1 %>% glance %>%  
+  mutate(df = (nobs + 1 - df.null)) %>% 
+  select(logLik, df)
+```
+
+## log odds
+The regression table is 
+```{r}
+glm_fit1 %>% tidy()
+```
+
+## Intercept
+
+The Intercept coefficient is the log odds of `hon` for males; males are the base group (female=0).
+
+```{r}
+glm_fit1 %>% tidy() %>% 
+  filter(term=="(Intercept)") %>% 
+  pull(estimate) %>% 
+  exp
+```
+The above is the odds for `hon` given male; this is not a percent.
+
+Odds are familiar from betting. Even more today. Odds formula is $$\Pr(hon|male)/(1-\Pr(hon|male)),$$ 
+the ratio of the probability of honors given male, divided by the probability of not honors given male.
+  
+The probability of being male with `hon` = 1.
+```{r}
+t=table(sample[,c("female","hon")])
+t
+(phonmale = t[1,2]/sum(t[1,]) )
+```
+
+So the reversal formula is 
+$$\Pr(hon|male) = odds/(1+odds) \\ = odds\_hon\_male/(1+odds\_hon\_male).$$
+## `hon` coefficient
+This corresponds to the second coefficient in the regression table, the one for female!
+
+```{r}
+glm_fit1 %>% tidy() %>% 
+  filter(term=="female1") %>% 
+  pull(estimate) %>% 
+  exp
+```
+
+This is odds ratio between female and male.  So we can get the odds ratio by exponentiating the coefficient for female. Here is how to reverse it get the second coefficient.
+
+```{r}
+log(1.809015)
+```
+
+# Logistic Regression - one continuous driver
+
+`math` is a score, not a 0-1 variable.
+
+```{r}
+glm_fit2 <- log_spec %>%
+  fit(hon ~ math, data = sample)
+
+glm_fit2 %>% glance() %>% gt_add_significance()
+glm_fit2 %>% tidy() %>% gt_add_significance()
+glm_fit2 %>% glance() %>% pull(logLik)
+glm_fit2 %>% tidy() %>% dplyr::select(term, estimate)
+```
+
+Now the base case is a math score of zero. So
+```{r}
+glm_fit2 %>% tidy() %>% 
+  filter(term=="(Intercept)") %>% 
+  pull(estimate) %>% 
+  exp
+```
+is the odds of being in honors when `math` score is 0. Very low odds!
+## Predictions and metrics
+
+Make predictions with this model and compute the accuracy. The default for the tidymodels `predict` is a threshold of .5, so we don't need to specify it, but to show the right logic for any threshold we explicitly do it.
+
+1. Get the raw probabilities. This returns a dataframe with two columns, `pred_0` and `pred_1`, the prob for `hon` = 0, and the prob for `hon` = 1.
+```{r}
+prob_preds2 <- predict(glm_fit2, new_data = sample, 
+                      type = "prob")
+prob_preds2 %>% head(3)
+```
+
+Apply a custom threshold (e.g., 0.5)
+```{r}
+prob_preds2 <- prob_preds2 %>%
+  mutate(custom_class = if_else(.pred_1 > 0.5, "1", "0"))
+prob_preds2 %>% glimpse
+```
+
+```{r}
+Pred2 =  prob_preds2$custom_class
+table(sample$hon, Pred2)
+accuracy_vec(factor(sample$hon), factor(Pred2))
+```
+
+The predictions of honors were right 81% of the time.
+
+
+## Predicting new results
+We predict for the two new `math` scores.
+```{r}
+# classes of `hon`
+(logp2p=predict(glm_fit2,
+                new_data=data.frame(math = c(54,55))) )
+# probabilities
+(logp2p=predict(glm_fit2,
+                new_data=data.frame(math = c(54,55)),
+                type="prob") )
+```
+
+Both predictions are class 0, no honors.
+
+The coefficient for math is the difference in the log odds.
+```{r}
+glm_fit2 %>% tidy() %>%
+  filter(term=="math") %>% pull(estimate)
+```
+
+In other words, for a one-unit increase in the math score, the expected change in log odds is .1563404.
+
+
+# Logistic regression - multiple predictor variables
+But no interaction terms.
+
+```{r}
+glm_fit3 <- log_spec %>%
+  fit(hon ~ math+female+read, data = sample)
+
+glm_fit3 %>% glance %>% gt_add_significance()
+glm_fit3 %>% tidy %>% gt_add_significance()
+```
+
+This fitted model says that, holding math and reading at a fixed value, the odds of getting into an honors class for females (female = 1) over the odds of getting into an honors class for males (female = 0) is exp(.979948) = 2.66.  
+
+In terms of percent change, we can say that the odds for females are 166% higher than the odds for males.  
+
+The coefficient for math says that, holding female and reading at a fixed value, we will see 13% increase in the odds of getting into an honors class for a one-unit increase in math score since exp(.1229589) = 1.13.
+
+```{r}
+glm_fit3 %>% tidy %>% filter(term=="female1") %>%
+  pull(estimate) %>% exp
+glm_fit3 %>% tidy %>% filter(term=="math") %>%
+  pull(estimate) %>% exp
+```
+## Predictions with multiple drivers
+Recall that the `tidymodels` predict assumes a threshold of .5 and returns a classification as a factor, not a probability.
+
+```{r}
+Pred3 = predict(glm_fit3, new_data = sample)$.pred_class
+table(sample$hon, Pred3)
+accuracy_vec(sample$hon, Pred3)
+```
+
+There is little improvement in accuracy.
+
+# Logistic regression - interaction term
+
+`female*math` puts in the variables `female` and `math`, and their product.
+
+```{r}
+glm_fit4 <- log_spec %>%
+  fit(hon ~ female*math, data = sample)
+
+glm_fit4 %>% glance() %>% gt_add_significance()
+glm_fit4 %>% tidy %>% gt_add_significance()
+```
+
+In the presence of an interaction term of `female` by `math`, we can no longer talk about the effect of `female`, holding all other variables at certain value, since it does not make sense to fix `math` and `female:math` at certain value and still allow `female` change from 0 to 1!
+
+In this simple example where we examine the interaction of a binary variable and a continuous variable, we can think that we actually have two equations: one for males and one for females.  For males (`female`=0), the equation is simply
+
+$$logit(p) = log(p/(1-p))= \beta_0 + \beta_2*math.$$
+
+For females, the equation is
+
+$$logit(p) = (\beta_0 + \beta_1) + (\beta_2 + \beta_3 )*math.$$
+
+Now we can map the logistic regression output to these two equations. 
+
+We can say that the coefficient for `math` is the effect of `math` when `female` = 0.  More explicitly, we can say that for male students, a one-unit increase in `math` score yields a change in log odds of 0.13.  
+
+On the other hand, for the `female` students, a one-unit increase in `math` score yields a change in log odds of (.13 + .067) = 0.197.  
+
+In terms of odds ratios, we can say that for male students, the odds ratio is exp(.13)  = 1.14 for a one-unit increase in `math` score and the odds ratio for female students is exp(.197) = 1.22 for a one-unit increase in `math` score.  
+
+The ratio of these two odds ratios (female over male) turns out to be the exponentiated coefficient for the interaction term of `female` by `math`: 1.22/1.14 = exp(.067) = 1.07.
+
+```{r}
+beta = glm_fit4 %>% tidy() %>% select(term, estimate)
+# 13.8% percent higher for males w increase math of 1 more
+beta$estimate[beta$term=="math"] %>% exp
+# 22% higher for 1 unit increase in math for fem
+beta$estimate[beta$term=="female1:math"] %>% exp
+# 1.06929 coef of interaction term
+# coefficients
+beta
+# ratio of odds ratios
+beta[beta$term=="female1:math","estimate"] %>% exp
+```
+
+1.06929 just as it says!!
+
+## Prediction from interactions
+
+```{r}
+Pred4 = predict(glm_fit4, new_data = sample)$.pred_class
+table(sample$hon, Pred4)
+accuracy_vec(sample$hon, Pred4)
+```
+
+Just a bit more at 81.5%
+
+# Discussion
+Thanks to Gemini for the discussion below.
+
+>The accuracy metrics (e.g., 0.81 and 0.815) are calculated using the exact same dataset (sample) that the model was trained on.
+
+>Issue: This represents the _training accuracy_, not the _out-of-sample predictive accuracy_. In data mining contexts, it's generally best practice to split the data using `tidymodels` method  `rsample::initial_split()` into training and testing sets to evaluate real-world model performance. 
+
+>However if this specific lesson is strictly about interpreting coefficients, this is less critical.
+
+# Conclusion
+
+We have reviewed the UCLA paper and accomplished what it says. It explains the concepts of odds and and probabilities, and the meaning of the coefficients of a logistic regression.
+
+It's not an easy subject.  But the 'odds' terminology is often used, not just in gambling, but also in talking about logistic regressions. Too bad!
+
+# References
+::: {#r1}
+1. [UCLA FAQ Odds Ratios](https://stats.oarc.ucla.edu/other/mult-pkg/faq/general/faq-how-do-i-interpret-odds-ratios-in-logistic-regression/)
+:::
+

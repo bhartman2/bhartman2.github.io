@@ -1,0 +1,258 @@
+---
+title: Ch05 Applied Exercises
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-17 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: simplex
+    highlight: tango
+abstract: |
+  We solve Section 5.6 Applied Exercises of the text.
+---
+
+# Introduction
+
+We solve Applied Exercises 5 and 6 from Chapter 5 of [the textbook](#r1).
+
+# Packages
+We load the usual packages.
+
+```{r}
+library(glmnet) # for ridge and lasso
+library(ISLR2) #package contains the data files, but not this one
+library(mbadtools) # used to manipulate data and plot
+```
+
+# Ch05 Problem 5
+
+>  5. In Chapter 4, we used logistic regression to predict the probability of `default` using `income` and `balance` on the `Default` data set. We will now estimate the test error of this logistic regression model using the validation set approach. Do not forget to set a random seed before beginning your analysis.
+
+>(a) Fit a logistic regression model that uses `income` and `balance` to predict `default`.
+
+>(b) Using the validation set approach, estimate the test error of this model. In order to do this, you must perform the following steps:
+
+>i. Split the sample set into a training set and a validation set.  
+>ii. Fit a multiple logistic regression model using only the training observations.
+>iii. Obtain a prediction of default status for each individual in >the validation set by computing the posterior probability of >default for that individual, and classifying the individual to the default category if the posterior probability is greater than 0.5.
+>iv. Compute the validation set error, which is the fraction of the observations in the validation set that are misclassified.
+
+>(c) Repeat the process in (b) three times, using three different splits of the observations into a training set and a validation set. Comment on the results obtained.
+
+>(d) Now consider a logistic regression model that predicts the probability of default using `income`, `balance`, and a dummy variable for `student`. Estimate the test error for this model using the validation set approach. Comment on whether or not including a dummy variable for student leads to a reduction in the test error rate.
+
+# Data 
+
+The credit default data is from the `ISLR2` package.
+
+```{r}
+data(Default)
+Default %>% skim
+```
+
+There are 10000 rows and 4 columns. All rows were complete.
+
+# (a) Logistic Regression Model
+
+First we fit a logistic regression model that uses `income` and `balance`, the quantitative drivers, to predict `default`. The fit uses all observations. We compute a confusion matrix for the regression. 
+
+```{r}
+logistic.fit=glm(default~income+balance, data=Default, family="binomial")
+
+logistic.fit %>% tidy() %>% gt_add_significance()
+
+prob = predict(logistic.fit, type="response")
+pred = case_when(prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+tab = table(Default$default, pred)
+CM = conf_mat(tab)
+CM
+CM %>% summary %>% filter(.metric %in% c("accuracy", "bal_accuracy",
+                                         "sens", "spec"))
+```
+
+The Accuracy is over 97%; but the balanced accuracy is only 85%. That is because there are vastly more Nos than Yeses. It's easy to predict No and hard to predict Yes. We can see the same because the Sensitivity for No is 98%, but the Specificity (for Yes) is only 73%.
+
+# (b) Validation set approach
+
+We will create a training dataset consisting of half the data and fit the logistic regression model on it. Then we will make predictions on the test data, and evaluate the Accuracy and Balanced Accuracy on the test data.
+We use a threshold of .5 instead of the prior probability of a Yes.
+
+```{r}
+set.seed(1)
+train=sample(nrow(Default), nrow(Default)/2, replace=FALSE) # half the data
+
+train.fit=glm(default~income+balance, data=Default, subset=train, family="binomial")
+train.fit %>% tidy %>% gt_add_significance()
+
+test.prob = predict(train.fit, newdata=Default[-train,], type="response")
+test.pred = case_when(test.prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+test.tab=table(Default$default[-train], test.pred)
+test.tab %>% addmargins
+c = conf_mat(test.tab)
+c
+c %>% summary %>% filter( .metric %in% c("accuracy", "bal_accuracy",
+                                         "sens", "spec"))
+```
+
+The Accuracy is now 97% and the Balanced Accuracy is 84%. The cross-validated model is a bit poorer than the full model, but that is to be expected, since it is predicting on different data from what it was trained on. But it is a better measure to compare with other cross-validation approaches.
+
+# (c) Repeat the process in (b) three times
+
+```{r}
+set.seed(1)
+train=sample(nrow(Default), nrow(Default)/2, replace=FALSE)
+
+train.fit=glm(default~income+balance, data=Default, subset=train, family="binomial")
+train.fit %>% tidy %>% gt_add_significance()
+
+test.prob = predict(train.fit, newdata=Default[-train,], type="response")
+test.pred = case_when(test.prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+test.tab=table(Default$default[-train], test.pred)
+c = conf_mat(test.tab)
+
+c %>% summary %>% filter( .metric %in% c("accuracy", "bal_accuracy",
+                                         "sens","spec"))
+```
+
+```{r}
+set.seed(2)
+train=sample(nrow(Default), nrow(Default)/2, replace=FALSE)
+train.fit=glm(default~income+balance, data=Default, subset=train, family="binomial")
+
+train.fit %>% tidy %>% gt_add_significance()
+
+test.prob = predict(train.fit, newdata=Default[-train,], type="response")
+test.pred = case_when(test.prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+test.tab=table(Default$default[-train], test.pred)
+c = conf_mat(test.tab)
+
+c %>% summary %>% filter( .metric %in% c("accuracy", "bal_accuracy",
+                                         "sens","spec"))
+```
+
+```{r}
+set.seed(3)
+train=sample(nrow(Default), nrow(Default)/2, replace=FALSE)
+train.fit=glm(default~income+balance, data=Default, subset=train, family="binomial")
+
+train.fit %>% tidy %>% gt_add_significance()
+
+test.prob = predict(train.fit, newdata=Default[-train,], type="response")
+test.pred = case_when(test.prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+test.tab=table(Default$default[-train], test.pred)
+c = conf_mat(test.tab)
+
+c %>% summary %>% filter( .metric %in% c("accuracy", "bal_accuracy",
+                                         "sens", "spec"))
+```
+
+We get different answers each time for Accuracy and Balanced Accuracy, Sensitivity and Specificity, and the predictions are different.
+
+# (d) Logistic Regression with student status
+
+We will include `student` in the regression. We will loop over 3 seeds. First we set up a list to hold the tables resulting from the three runs, and a data frame to hold the Accuracy and Balanced Accuracy we computed each time.
+
+```{r}
+tables=list()
+measures=data.frame(Seed=0, Accuracy=0, BalancedAccuracy=0, Sensitivity=0, Specificity=0)
+```
+
+Now we set three different seeds and run the same routine as above, storing the resulting table and measures each time. Finally we print out the three tables and the three sets of measures.
+
+```{r}
+for (s in 1:3) {
+  
+  set.seed(s)
+  
+  train=sample(nrow(Default), nrow(Default)/2, replace=FALSE)
+  train.fit=glm(default~income+balance+student, data=Default, subset=train, family="binomial")
+  
+  train.fit %>% tidy %>% gt_add_significance()
+  
+  test.prob = predict(train.fit, newdata=Default[-train,], type="response")
+  test.pred = case_when(test.prob>=0.5 ~ "Yes", .default="No") %>% as.factor()
+
+  test.tab=table(Default$default[-train], test.pred)
+  c = conf_mat(test.tab)
+
+  c %>% summary %>% filter( .metric %in% c("accuracy", "bal_accuracy")) %>% 
+    select(.estimate)
+  measures[s,]$Seed=s
+  measures[s,]$Accuracy=c %>% summary %>% filter(.metric=="accuracy") %>% 
+    pull(.estimate)
+  measures[s,]$BalancedAccuracy= c %>% summary %>% filter(.metric=="bal_accuracy") %>%
+    pull(.estimate)
+  measures[s,]$Sensitivity= c %>% summary %>% filter(.metric=="sens") %>%
+    pull(.estimate)  
+  measures[s,]$Specificity= c %>% summary %>% filter(.metric=="spec") %>%
+    pull(.estimate)  
+  tables[[s]] = test.tab
+}
+
+print(tables)
+measures %>% gt
+```
+
+Knowing that the person reported as a `student` does not improve the accuracy or balanced accuracy of the predictions.
+
+This is fairly conclusive even using this simpler form of cross-validation.
+
+# Ch05 Problem 6
+
+>6. We continue to consider the use of a logistic regression model to predict the probability of `default` using `income` and `balance` on the `Default` data set. In particular, we will now compute estimates for the standard errors of the `income` and `balance` logistic regression coefficients in two different ways: (1) using the bootstrap, and (2) using
+the standard formula for computing the standard errors in the `glm()` function. Do not forget to set a random seed before beginning your analysis.
+(a) Using the `summary()` and `glm()` functions, determine the estimated standard errors for the coefficients associated with `income` and `balance` in a multiple logistic regression model that uses both predictors.
+(b) Write a function, `boot.fn()`, that takes as input the `Default` data set as well as an index of the observations, and that outputs the coefficient estimates for income and balance in the multiple logistic regression model.
+(c) Use the `boot()` function together with your `boot.fn()` function to estimate the standard errors of the logistic regression coefficients for `income` and `balance`.
+(d) Comment on the estimated standard errors obtained using the `glm()` function and using your bootstrap function.
+
+We can determine the usual standard errors from linear regression using the `tidy()` function.
+
+```{r}
+logistic.fit=glm(default~income+balance, data=Default, family="binomial")
+logistic.fit %>% tidy %>% gt_add_significance()
+```
+The standard errors of the coefficients are in the std.error column of the Coefficients table. 
+
+Now we will code up a `boot.fn()` for the bootstrap.
+
+```{r}
+boot.fn = function(data, index) {
+  return(coef(glm(default~income+balance, data=data, family="binomial")))
+}
+```
+
+Next we must change the `default` column in Default to a numeric 0-1 variable since the bootstrap operates on numeric values only. 
+
+To do this we create a new dataframe `df` with the numeric column replacing the factor one in the original data. Since the factors are 1 and 2, we subtract 1 to get between 0 and 1.
+
+```{r}
+df = Default %>% mutate(default = as.numeric(default)-1)
+df %>% glimpse
+```
+
+Now run a bootstrap and estimate the standard errors of the coefficients. Making 1000 samples takes a long time.
+
+```{r}
+tictoc::tic()
+boot(df, boot.fn, 1000)
+tictoc::toc()
+```
+
+There is essentially no standard error in the coefficients. The model can be concluded to be very robust.
+
+# Conclusion
+
+We solved Applied Problems 5 and 6 using R.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 5 Applied Exercises 5 ad 6, page 198-199.

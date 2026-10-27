@@ -1,0 +1,287 @@
+---
+title: Ch04 Classification Confusion
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-10 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We show connections between probability and statistics studies and typical analyses used with categorical data and classifications. We follow Chapter 3 lab Section 6.2 of [ISLR](#r1), in an R Notebook using modern tidyverse methods, performing a simple regression on the `Boston` dataset.
+---
+
+# Introduction
+Here I want to show some of the connections between the probability and statistics you studied years ago and the analyses we learn about when studying classification algorithms.
+
+Logistic Regression is a commonly used classification technique.  Classification algorithms use some predictors, or drivers, in a data set to estimate a response or target which is a discrete variable, such as "Yes"/"No" or "Down"/"Up". In the data set we will have the observed values of this target variable. 
+
+For this essay we will use data from the `ISLR2` package, associated with [the book](#r1). The Default dataset is in that package. It contains observations of credit card default information, with a target 'default' and three drivers, 'student', 'balance', and 'income'. The problem is to try to predict default, using the drivers student, balance and income. Such a routine would aid in determining which cards are at risk of a default; perhaps we should not offer them more credit.
+
+# Packages
+We use the usual packages and include `tidymodels` for some clever modeling workflow features.
+```{r}
+library(ISLR2) #package contains data files
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Data
+The `Default` dataset has to do with predicting banking and credit defaults.
+```{r}
+data(Default)
+Default
+Default %>% skim
+```
+
+We can see from the `skim` function that there are two discrete or factor variables, the target 'default', and the driver 'student'. These are each coded "No"/"Yes", with "No" represented by 1. The other drivers, 'balance' and 'income' are numeric. Let's first do some simple data description to see relations between the columns.
+
+The number of defaults is very low compared to the rest, 9667 Nos and only 333 Yes. So the prior probability of default (a guess at the probability if we did not use any driver information) is not 50-50, by any means. This situation is very common in analytics, and causes issues in trying to see if a classification algorithm is doing a good job or not.
+
+We will use some graphs to get more of a feel for the data; how does default depend on income and balance? I will use `ggplot()`.
+
+```{r}
+p1 = ggplot(Default) +
+  geom_point(aes(balance, income, color=default), shape=1) +
+  scale_color_manual(values=c("lightblue", "orange"), 
+                     labels = c("No", "Yes")) +
+  labs(x="balance",y="income", title="Figure 4.1")
+p2 = ggplot(Default)+
+  geom_boxplot(aes(default, balance), fill=c("light blue","orange"), color="black") +
+  labs(x="default",y="balance",title="")
+# p2
+p3 = ggplot(Default)+
+  geom_boxplot(aes(default, income), fill=c("light blue","orange"), color="black") +
+  labs(x="default",y="income",title="")
+# p3
+
+p1 | p2 | p3
+```
+
+Higher balances are associated with defaults. High balances are spread across income levels. Lower income is only slightly more associated with default.
+
+# Logistic Regresssion
+
+We will try Logistic Regression, a common classification technique, and one that is relatively easy to understand. In classification we should set up a training dataset and a test dataset by partitioning the full dataset. Then we can train the algorithm on one part and test it by making predictions on the other part. Since there are many observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+## Data Prep
+The old way.
+```{r}
+half=nrow(Default)/2
+train=Default[1:half,]
+test=Default[(half+1):10000,]
+dim(train)
+dim(test)
+```
+
+The `tidymodels` way.
+```{r}
+split <- initial_time_split(Default, prop = .5) # takes first half of data
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(Default$default)
+contrasts(Default$student)
+```
+
+The contrasts show us that the 'positive' condition is No for default and student. It is assigned value 0 in the factor.
+
+## Model
+Now we can run or 'train' logistic regression on the train part of the dataset.  We will try using `balance` and `student` status to predict default.
+
+```{r logistic, echo=TRUE}
+glm.logit <- glm(default ~ balance + student, 
+                 data = train_data, family = "binomial")
+glm.logit %>% summary() 
+glm.logit %>% glance()
+glm.logit %>% tidy %>% gt_add_significance()
+```
+
+The `summary` and `tidy` show that both drivers are significant (green p-values). 
+
+## Predictions
+
+Next we make predictions for the test data using the model we developed, using the `predict()`  function in R, with the "response" type. 
+
+These predictions are probabilities, and first, naively, we turn them into "No"/"Yes" values by assuming that each is equally likely; the probability of 0.5 is the _threshold_.
+
+That's a problem here! They aren't equally likely. The 'prior probability' of default (from the original data) is actually quite small. We will compute it and make predictions both ways.
+
+```{r}
+# probability of default = "No"
+prior = Default %>% group_by(default) %>%
+  summarize(n=n()) %>% 
+  mutate(percent = n/sum(n)) %>% 
+  filter(default=="No") %>% pull(percent)
+prior
+```
+
+Predictions.
+```{r predict }
+probs=predict(glm.logit, test_data, type="response")
+preds.5 = ifelse(probs > .5, "Yes", "No") %>% as.factor
+preds.9 = ifelse(probs > prior, "Yes", "No") %>% as.factor
+```
+
+Because the test dataset is just a random 50% split of your original data, it already naturally contains the correct real-world prevalence of defaults.
+
+## Confusion Matrix
+We compare the results by making a confusion matrix with `conf_mat()`.  Each cell of the table tells us how many observations fell into each category.
+
+<a name="e1"/>
+```{r}
+CM.5 = data.frame(default = test_data$default,
+                  .pred = preds.5) %>%
+  conf_mat(default, .pred)
+CM.5
+```
+
+Now what we care about is predicting Yes when default is Yes. So Yes-Yes would be the _positive event_. But No is the first level in the matrix.  `conf_mat()` assumes we are most interested in the No-No, and thinks that is the positive event. 
+
+We can switch that in for computing the metrics from the confusion matrix by setting the parameter 'event_level="second"'. It does not change the resulting tble, but does change how some of the metrics, specifically _sensitivity, specificity, positive predictive value_  are computed.
+
+Computing metrics uses the `summary.conf_mat()` function.
+```{r square5 }
+CM.5 %>% summary(event_level="second") %>% 
+  gt() %>% opt_interactive(use_compact_mode=TRUE) %>%
+  fmt_number(decimals = 4) %>% 
+  tab_header(title="Metrics Threshold .50")
+```
+
+Using a threshold of 0.5, we have correctly predicted "No" 4816 times, and we correctly predicted "Yes" 54 times.  We predicted default="Yes" 26 times when in reality there was no default. And we predicted "No" 104 times when there was actually a default.
+
+The metric 'detection_prevalence', the one we are considering _positive_, is the percentage of correct predictions of "Yes" here, and is 0.0160.
+
+Now we do it for the threshold set to `prior`.
+```{r square }
+CM.9 = data.frame(default = test_data$default,
+                  .pred = preds.9) %>%
+  conf_mat(default, .pred)
+CM.9
+
+CM.9 %>% summary(event_level="second") %>% 
+  gt() %>% opt_interactive(use_compact_mode=TRUE) %>%
+  fmt_number(decimals = 4) %>% 
+  tab_header(title=paste0("Metrics Threshold ", prior))
+```
+
+Using a threshold of 0.9667, we have correctly predicted "No" 4842 times, and we correctly predicted "Yes" 3 times.  We predicted default="Yes" 0 times when in reality there was no default. And we predicted "No" 155 times when there was actually a default.
+
+The metric 'detection_prevalence' is the percentage of correct predictions of "Yes" here, and is 0.0006.
+
+# Meaning
+
+The business question here is whether this model helsp us by predicting defaults. And how might we compare it with other models for prediction?  We won't go into this here; our focus is on how we might measure the performance of this model. 
+
+# Conditional Probability
+
+Such a layout as our confusion matrix table is called a Punnett square in math class, and it is the easiest way to understand conditional probabilities. 
+
+We have two events, $A$  and $B$ (the actual observed state is "No"). A conditional probability is calculated as $$Prob(A | B) = P(A \& B)/P(A)P(B).$$ We read this as "The probability of A given B (or conditional on B happening) is the probability of A and B happening together divided by the product of the probability of A and the probability of B."
+
+Let's call event $B$ a 'positive observation' namely default="No". And event $A$ will be a 'positive prediction', prediction of default= "No". Then the table shows events $A$ and $\neg A$ in the rows, and $B$ and $\neg B$ in the columns, with the cells being the counts of how many of each combination occurred.
+
+We then have the following conditional probabilities that can be calculated from the square. It's all simple math.
+
+We'll use the [confusion matrix with threshold .5](#e1) as an example.
+
+- All the conditionals with `default` status conditioned on preds status; these come from rows:
+
+|Conditional|Calculation| R calculation|
+|------------------------|------------|------------|
+| Prob(default="No"\|preds="No")  | 4816/(4816+104) | `r 4816/(4816+104)` |
+| Prob(default="No"\|preds="Yes") | 26/(26+54) | `r 26/(26+54)` |
+| Prob(default="Yes"\|preds="No") | 104/(4816+104) | `r 104/(4816+104)` |
+| Prob(default="Yes"\|preds="Yes") | 54/(26+54) | `r 54/(26+54)` |
+
+- All the conditionals with preds status conditioned on `default` status; these come from columns:
+
+|Conditional|Calculation| R calculation|
+|------------------------|------------|------------|
+| Prob(preds="No"\|default="No")  | 4816/(4816+26) | `r 4816/(4816+26)` |
+| Prob(preds="Yes"\|default="No") | 26/(4816+26) | `r 26/(4816+26)` |
+| Prob(preds="No"\|default="Yes") | 104/(104+54) | `r 104/(104+54)` |
+| Prob(preds="Yes"\|default="Yes") | 54/(104+54) | `r 54/(104+54)` |
+
+Obviously we can predict defaults well. But we sometimes predict default for folks that don't default!!!
+
+# Confusion and Meanings
+
+There are lots of measures for the confusion matrix. Look at [the `caret::confusionMatrix()` help file](https://www.rdocumentation.org/packages/caret/versions/7.0-1/topics/confusionMatrix), in the Details section, to see all the calculations from the Punnett square.
+
+I'll use tht function to display some of the computations detailed. The first group is called 'overall', and we will mostly be concerned with the `accuracy`. 
+
+As the help states, the McNemar p-value is a one-sided test to see if the `accuracy` is better than the NoInformationRate, defined as the sum of the first column divided by the sum of all entries.
+
+```{r}
+caret::confusionMatrix(CM.5$table, positive="Yes") %>%
+    tidy(by_class=FALSE)
+```
+
+The second group is called 'byClass', and we will be interested in a lot of them.
+
+```{r}
+caret::confusionMatrix(CM.5$table, positive="Yes") %>%
+  tidy() # by_class = TRUE is default
+```
+
+We compare these measures to Punnett square conditional probabilities.
+
+* All the conditionals with default status conditioned on preds status; these come from rows:
+
+|Conditional|Calculation| R calculation| Measure |
+|------------------------|------------|------------|---------------------|
+|Prob(default="No"\|preds="No") | 4816/(4816+104)) | `r 4816/(4816+104)` | **Pos Pred Value** = **Precision** |
+|Prob(default="No"\|preds="Yes") | 26/(26+54) | `r 26/(26+54)` |  1 - **Neg Pred Value** |
+|Prob(default="Yes"\|preds="No") | 104/(4816+104) | `r 104/(4816+104)` | 1 - **Pos Pred Value**|
+|Prob(default="Yes"\|preds="Yes") | 54/(26+54) | `r 54/(26+54)` | **Neg Pred Value** |
+
+
+* All the conditionals with preds status conditioned on default status; these come from columns
+
+
+|Conditional|Calculation| R calculation| Measure |
+|------------------------|------------|------------|---------------------|
+| Prob(preds="No"\|default="No")  | 4816/(4816+26) | `r 4816/(4816+26)` | **Sensitivity** = **Recall** |
+|Prob(preds="Yes"\|default="No") | 26/(4816+26) | `r 26/(4816+26)` | 1 - **Sensitivity** |
+|Prob(preds="No"\|default="Yes") | 104/(104+54) | `r 104/(104+54)` | 1 - **Specificity** |
+|Prob(preds="Yes"\|default="Yes") | 54/(104+54) | `r 54/(104+54)` | **Specificity** |
+
+
+* Other Measures
+
+|Conditional|Calculation| R calculation| Measure |
+|------------------------|------------|------------|---------------------|
+|Prob(preds=="No"& default=="No") + Prob(preds=="Yes" & default=="Yes") = sum of correct preds (main diagonal)/total obs | (4816+54)/(4816+104+54+26) | `r (4816+54)/(4816+104+54+26)` | **Accuracy** |
+|Prob(default=="No") = Just predict everyone "No" | (4816+26)/(4816+104+26+54) | `r (4816+26)/(4816+104+26+54)` | **No Information Rate**  = **Prevalence** |
+|Prob(pred=="No" & default=="No") = true positives / sum of all; fraction of whole sample pred "No" and were "No"  | 4816/(4816+104+26+54) | `r 4816/(4816+104+26+54)` | **Detection Rate** |
+|Prob(pred=="No") = sum of pred "No" / sum of all  |  (4816+104)/(4816+104+26+54) | `r (4816+104)/(4816+104+26+54)` | **Detection Prevalence** |
+|Prob(pred=="No"\|default=="No")+ Prob(pred=="Yes"\|default=="Yes"))/2 = average of the fraction right for each default type (column) |  (4816/(4816+26)+54/(104+54))/2 | `r (4816/(4816+26)+54/(104+54))/2` | **Balanced Accuracy** |
+
+Recall that "Yes" is the positive outcome!
+
+# Conclusion
+
+We examined a logistic regression and created a table of predictions versus actual values. That table was a traditional object from statistics. We learned to use the `confusionMatrix()` function to calculate many measures of accuracy from that table.  
+
+We saw exactly how these measures are calculated from conditional probability formulas, familiar (?!) from statistics.  
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, p127ff.
+
+::: {#r2}
+2. Max Kuhn (2019) Measuring Performance. [The Caret Package](https://topepo.github.io/caret/measuring-performance.html)
+
+:::
+
+
+
+
+

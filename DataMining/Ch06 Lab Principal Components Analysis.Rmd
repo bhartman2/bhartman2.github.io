@@ -1,0 +1,308 @@
+---
+title: Ch06 Lab Principal Components Analysis
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-17 at `r format(lubridate::now(), '%H:%M:%S')`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We use principal components analysis (PCA) to reduce the dimension (number of drivers) we need to consider in a problem. PCA replaces the drivers with linear combinations of them; we may need only a few components to  achieve substantially all the value of the original drivers.
+---
+
+# Introduction
+
+This section follows [Michy (2016)](#r1).  Principal Components Regression (PCR) or Principal Components Analysis (PCA) is one method of reducing the dimension of a
+problem. 
+
+If there are so many drivers that regression alone finds it
+difficult to select the ones to use, perhaps instead we can use some linear combinations
+of the drivers. It also follows Section 6.7.1 in [the text](#r2).
+
+Sometimes this is called __feature selection__. A feature is a new variable concocted from the original ones.
+  
+Essentially we come up with a calculation to abstract from the drivers some few features called 'components' that capture as much or all of the capability they have to predict. But the regression on the components will be much simpler. 
+
+As a bonus, the components themselves might reveal new concepts of how the drivers cluster together. We might even to be able to discern 'meanings' for the components.  But that isn't necessary to make the method work. It's just a plus if we can, from a management perspective, identify components with unrevealed abilities the observations have that allow us to analyze them.
+
+Why use it? PCA reduces the dimension (number of drivers) in the data set.
+
+See [Michy (2016)](#r1) for a discussion of advantages and disadvantages.
+
+One could see dimension reduction or feature selection as a theme for all of artificial intelligence.  
+
+Neural networks do the same thing. Here's how they construct the network. For the first 'hidden' layer, a NN figures out how to put weights on the drivers to best fit the target using the new nodes in that layer. We've specified how many nodes there will be in every layer. For the second hidden layer, it does the same, using the nodes or features or pseudo-drivers from the previous layer. And so on, for as many hidden layers specified. In the final layer, the target is modeled using the final hidden layer nodes. So you see we have a kind of repeated 'dimension reduction'.  It may not be a reduction, since we could specify an increasing number of nodes in the hidden layers, but normally there are fewer in each layer.  
+
+# Packages
+One can use the `pls` package for determining the principal components.  We are including it. But already in R there is the `prcomp` package that performs similar analysis.
+
+The `FactoMineR` and `factoextra` packages give us some PCA methods and visualization tools that could be useful. 
+
+```{r}
+library(pls) # alternate PCA algorithm
+library(factoextra) # for clustering analysis and PCA plotting; 
+library(FactoMineR) # for some analytics and graphics
+library(ISLR2) # package contains data files
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+# Data
+
+We use the Hitters dataset from the `ISLR2` package.
+
+```{r}
+data(Hitters)
+Hitters=na.omit(Hitters) # remove the NAs
+Hitters %>% skim
+```
+
+There were 59 NAs in `Salary`; these observations were removed. There are a few factor variables, but most are numeric.
+
+# Linear Regression
+
+Before we start let's run a simple MLR on these all and see what the results are. The idea of PCA is that fewer variables is better, and 19 driver variables is way too many to comprehend for decision-making.
+
+```{r}
+lm.fit=lm(Salary~.,data=Hitters)
+lm.fit |> glance() %>% gt_add_significance()
+lm.fit |> tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+```{r fig.height=10, fig.width=12, message=FALSE}
+# residual plots
+lm.fit %>% gg_residual_plots()
+```
+
+Only a few variables are significant, and the Adjusted R-squared is .51. There are some outliers to be sure, and scale-location shows rising residuals!! The result is not that desirable. But the residuals are more or less normally distributed.
+
+# Principal Components Analysis
+
+Principal Components Analysis (PCA) tries to simplify the data by projecting the drivers onto mutually perpendicular directions called components. It does this by finding the first component direction so that a maximum of the variation is explained. Then it finds the component that explains the next-most variation that is left. And so on, till there is a component for each driver.  
+
+This works because it's a theorem in linear algebra math that we can do it. For mathematicians, it involves the Cholesky factorization of a matrix.
+
+If the drivers are multicollinear to some degree, some of the components won't make much improvement. But there will probably be some number of components that will produce a good enough explanation of the variation. We could then have a linear model using just these few components, reducing the dimensionality of the problem (with some loss, of course).
+
+One common question is whether the components have any meaning. Or have we just confused the user with some synthetic numbers not tied to any reality? The answer is yes and no. You may be able to interpret the components in some human knowledge terms, by examining exactly how they are made up from the drivers. These are called loadings.
+
+# Methods
+There are several ways to use PCA. We will explore one here.
+
+- tidy methods allow you to create PCA representations of some variables in the Data Prep phase. In later modeling phases you use the new features as if they were replacing the features they were created from.
+- standard `prcomp`, a built-in R package, allows you to run PCA regressions and look at results.
+- standard `pls`, a partial least squares package, does the same.
+- standard `FactoMineR` builds PCA into some modeling routines and provides excellent graphics via `factoextra`
+
+# Modeling PCA
+Let us try to reduce the dimensionality by finding principal components with the `pls` package; install it first. 
+
+There is randomness involved, because we are going to use 10-fold cross-validation, the default for the CV method. We did not do cross-validation on the linear regression above. Let's set the seed so results will be reproducible.
+
+```{r}
+set.seed(2)
+```
+
+As the book indicates, scaling variables is desirable so one large variable doesn't overly influence outcome; we use the parameter `scale=TRUE`. ;  
+
+This version of PCA is good because it does the crossvalidation as it calculates the PCs. The CV validation is done by selecting 'validation=TRUE'.
+
+Run on all the data. 
+
+```{r}
+pcr.fit=pcr(Salary ~ ., data=Hitters, 
+            scale=TRUE, validation ="CV")
+summary(pcr.fit)
+```
+
+We see that 19 components were considered, and results were obtained for everything from a single component to all 19 components. 
+
+The cross-validation score is provided for each possible number of components, ranging from M = 0 onwards. Note that `pcr()` reports the root mean squared error (RMSE).
+
+The bottom TRAINING section shows us the percentage of variation of `Salary` that is explained by that number of components. We can see that the numbers increase, which we would expect. But how much of the gain is significant? 
+
+One can also plot the cross-validation scores using the `pcr::validationplot()` function. Using `val.type="RMSEP"` will cause the cross-validation RMSE to be plotted.
+
+```{r}
+validationplot(pcr.fit ,val.type="RMSEP", type="b")
+```
+
+This plot is easily reproduced with `ggplot` by extracting the components and RMSE values using function `RMSEP()`.
+
+```{r}
+d = data.frame(comps = RMSEP(pcr.fit)$comps, val = RMSEP(pcr.fit)$val["CV",,])
+ggplot(d) +
+  geom_point(aes(comps, val), shape=2, color="red")+
+  geom_line(aes(comps, val), linetype="dashed" )+
+  theme_bw()
+```
+
+From the plot we also see that the cross-validation error is roughly
+the same when only one component is included in the model. This suggests that a model that uses just a small number of components might suffice. We could pick say 2 components. The next minimum seems to be at 6 components.
+
+The `summary()` function also provides the percentage of variance explained
+in the predictors and in the response using different numbers of components.
+This concept is discussed in greater detail in Chapter 10. Briefly,
+we can think of this as the amount of information about the predictors or
+the response that is captured using M principal components. For example,
+setting M = 1 only captures 38.31% of all the variance, or information, in
+the predictors. We get 60% with M=2. In contrast, using M = 6 increases the value to 88.63%. 
+
+# Visualizing PCR results
+
+One way to visualize the principal components is to plot them in a `biplot()`.  These are for just components 1 and 2. These are equivalent. Notice how the row names, the player names, appear in the plot.
+```{r}
+biplot(pcr.fit, comps=c(1,2))
+plot(pcr.fit, comps=c(1,2), plottype = "biplot")
+```
+
+You can also plot the factor loadings. These show how each original driver contributes to the two components graphed. Usually we are interested in the first two components, since those explain most of the variation. 
+```{r}
+biplot(pcr.fit, comps=c(1,2), which = "loadings")
+loadingplot(pcr.fit, comps=1:2, scatter=T, labels="names")
+```
+
+This could be helpful in trying to explain the PCA model. The first two components are shown on the graph axes. The position of a driver name shows what it contributes to the component.  You can see that current `AtBats, Hits, RBI, HmRun` and `Walks` contribute a lot to both components. However, `Years` and `Career` drivers contribute a lot to component 1 and negatively to component 2. 
+
+And `Errors, Assists` and `PutOuts` contribute most to component 2 and little or nothing to component 1. The league and division factors contribute negatively to component 2 and also negatively to component 1. 
+
+So can we say that component 1 is hitting and component 2 is league and fielding?  It makes some sense.  How useful is this anthropomorphism of the data?
+
+Read Chapter 10.2.1 about Principal Components [ISLR (2013)](#r2) to learn what all this means. Note that the principal components are normalized and orthogonal (a fancy term for uncorrelated, or perpendicular, in n-dimensional space of
+course).
+
+We do not use fancy visualizations in this notebook because the `factoextra` package does not handle objects made by the `pcr` package.
+
+# Predictions
+
+We can get an idea of the RMSE of the PCA model using three components. The `yardstick` package from `tidyverse` contains functions for computing RMSE and other performance measures.
+
+The `pcr.fit` object is huge, but contains the fitted values or predictions. Its' a 3-dimensional array with entries the fitted values of Salary, the row names of the players, and the names of the 19 components.
+
+```{r}
+pred = pcr.fit$fitted.values[,1,3]
+M = tibble(pred, est=Hitters$Salary)
+M %>% rmse(est, pred) # always put truth first and estimate second.
+```
+
+A `predplot` plots the predicted values of `Salary`
+ against the measured values. It's really a YVP plot.
+ The red line shows what the values would be if there were perfect prediction. Clearly the prediction with 3 components is not perfect.
+
+```{r}
+predplot(pcr.fit, ncomp=3, ylim=c(0, 2500))
+abline(0,1, col="red")
+```
+
+`ggplot` way.
+```{r}
+tibble(truth=Hitters$Salary, 
+       estimate=pcr.fit$fitted.values[,1,3]) |> 
+  ggplot(aes(truth, estimate)) +
+  geom_point() + 
+  coord_cartesian(ylim=c(0,2500)) + 
+  geom_abline(aes(slope=1, intercept=0), color="red")+
+  labs(title="Salary, 3 components, validation",
+       x="Truth", y="Estimate")
+```
+
+The high priced players measured are not as valuable as their pay would indicate.
+
+# PCA with `FactoMineR`
+With this package you have to specify the factor or qualitative variables and their column numbers using `match` in `Hitters`.
+```{r}
+# find column numbers of factors
+H = Hitters |> select(-Salary)
+H |> select(-where(is.numeric))|> names()
+quali = match(H |> select(-where(is.numeric))|> names(),
+      H|> names())
+quali
+```
+Run the model using the `PCA` function, specifying the qualitative factors. It automatically outputs two plots, an individual plot and a variable plot. The 'ncp' parameter is the number of dimensions kept in the results (by default 5). We choose 19, same as the number of drivers.
+```{r}
+# use FactoMineR package
+G = H |> PCA(quali.sup=quali, ncp=19)
+```
+
+A screeplot is a common viz tool with PCA. It shows the percent of variation explained by each component, and the cumulative amount.
+```{r}
+G |> fviz_screeplot()
+```
+This plot shows the individuals on the first two components, with ellipses defining the boundaries of the two Divisons.
+```{r}
+G |> fviz_pca_ind(geom="point", 
+                   addEllipses=TRUE, 
+                   habillage = "Division",
+                   palette="Dark2")
+```
+# Conclusion
+We followed the article by [Michy (2016)](#r1) to apply principal components analysis to the Hitters data. We used the `pcr` package for the fit, which does 10-fold crossvalidation automatically.  We obtained the principal components, and found that just two components captured about 60% of the variation in the data.
+
+We also compared the predictions to a neural network model. The neural network 'overfit' the data; While it got lower RMSE, it did not reveal the overpaid and underpaid players as well.
+
+Finally, we explored the `FactoMineR` and `factoextra` packages, an alternate way to do PCA and other multivariate data analyses with great graphics.
+
+# References
+::: {#r1}
+[Michy (2016)](http://www.milanor.net/blog/performing-principal-components-regression-pcr-in-r/) Michy, Alice (2016) Performing Principal Components Regression (PCR) in R, July 21, 2016. *Milano R*, (http://www.milanor.net/blog/performing-principal-components-regression-pcr-in-r/), retrieved on 11/29/2021.
+
+::: {#r2}
+[ISLR (2013)]() ISLR Chapter 10.2.1
+
+::: {#r3}
+[Kassambara (2020)](https://rpkgs.datanovia.com/factoextra/index.html) Alboukadel Kassambara (2020) factoextra : Extract and Visualize the Results of Multivariate Data Analyses. (https://rpkgs.datanovia.com/factoextra/index.html) Retrieved 12/06/2024.
+
+:::
+
+# Appendix
+# Neural Net for Comparison
+
+We can use the `neuralnet` package to engage in dimension reduction as well. But the dimensions will be hidden. We have to scale the numeric drivers and change the factor variables to numeric 0-1 variables. We use two layers, containing 7 and 3 neuron nodes respectively, in the two layers. It takes a while to run. One of the issues with AI is the long run times. 
+
+```{r}
+library(neuralnet)
+hitters.nn = data.frame(
+  Hitters|> select( where( function (.x) !is.numeric(.x))) %>%
+    sapply(FUN=function (x) as.numeric(x)-1),
+  Hitters|> select( where( function (.x) is.numeric(.x))) %>% scale
+  )
+tictoc::tic()
+nn.fit = neuralnet::neuralnet(Salary~., data = hitters.nn, hidden=c(10,3))
+tictoc::toc()
+```
+
+We can make a plot of the result:
+```{r fig.width=10, fig.height=7}
+plot(nn.fit)
+```
+
+You can see the hidden layers of derived variables, the circles, resulting finally in 3 features which might be like components. The final estimates of `Salary` are done using the last 3 features.
+
+The predictions are given by
+```{r}
+nn.pred=predict(nn.fit, newdata=hitters.nn)
+```
+
+Since they are scaled we need to change them to unscaled values by adding the mean of `Salary` and the result multiplied by the standard deviation of `Salary`. We can also compute the MSE of the nn approximation.
+
+```{r}
+nn.Salary = mean(Hitters$Salary) + sd(Hitters$Salary)*nn.pred
+rmse_vec(Hitters$Salary, nn.Salary %>% as.numeric())
+```
+
+```{r}
+tibble(truth=Hitters$Salary, estimate=nn.Salary) |> 
+  ggplot(aes(truth, estimate)) +
+  geom_point() + 
+  coord_cartesian(ylim=c(0,2500)) + 
+  geom_abline(aes(slope=1, intercept=0), color="red")+
+  labs(title="Neural Network with (7,3) nodes, Salary",
+       x="Truth", y="Estimate")
+```
+The neural network seems to have "over-fit" the data, matching the actual salaries too closely and not leaving any room for finding discrepancies.  That's because it is using nonlinear fitting and randomness with sampling of many trials to build the features. 
+
+A __neural network does not seem to be a good model__ for baseball salaries, for the purpose of working out who is underpaid and who is overpaid. The general manager's goal cannot be met by this model.
+
+

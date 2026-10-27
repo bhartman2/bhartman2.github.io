@@ -1,0 +1,475 @@
+---
+title: Ch06 Ridge and Lasso
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-14 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We demonstrate ridge and lasso methods of choosing drivers to shrink or simplify regressions. We use the Hitters data, which has a large numer of potential drivers, and apply crossvalidation as well.
+---
+
+# Introduction
+Our book discusses ridge and lasso regression in [Section 6.6 of the textbook](#r1). The ridge and lasso methods are called *shrinkage* methods because they constrain the size ('shrink') of the coefficients towards zero. These methods can also be called Regularization.
+
+The Ridge and especially the Lasso are ways of choosing some of the drivers out of the set of all of them to use for predictions. 
+
+Both Ridge and Lasso Regression work on the idea of creating a penalty for using drivers with big coefficients in the regression.  They differ in the form of the penalty; a Pythagorean (square or quadratic) penalty for Ridge regression, and an absolute value penalty for the Lasso.  
+
+But what we mainly see is that in Ridge regression every driver gets a coefficient; some of them are just very very small, nearly zero. Those are the ones to leave out.  
+
+In the Lasso, however, some of the drivers are actually left out, with zero coefficients.  We'll look for that in the regression outputs.
+
+So especially the Lasso is a __feature selection__ algorithm, and it's very much in style right now for data mining. It has quite a few advantages and happens to be robust.
+
+Sometimes the ridge regression penalty is called an $L_2$ norm (squared, euclidean) and the lasso penalty an $L_1$ norm (absolute value). Higher math.
+
+We apply each technique in concert with crossvalidation.  That is also important for robustness of the models we build.
+
+In this notebook, we will feature the `tidymodels` methods for workflow, because they're handy for picking good values of parameters. But we will also show the standard methods that the text employs, so you can follow along.
+
+# Packages
+We load our preferred packages and others we will need. For Ridge and Lasso we need package `glmnet`.  
+
+```{r}
+# extras
+library(ISLR2) # package contains the data files
+library(glmnet) # for ridge and lasso
+library(boot) # for bootstrap
+library(mbadtools, quietly=TRUE) # MBAD standard packages
+```
+
+# Getting Data
+
+We will use the `Hitters` data from the `ISLR` package for all these experiments with automatic regression testing. We have seen this before so I'll abbreviate the data wrangling to remove NAs first.
+
+```{r}
+data(Hitters)
+Hitters=na.omit(Hitters) # omits rows with NAs
+Hitters %>% skim()
+```
+
+We now have 263 Hitters with known salaries. Three columns, `League`, `Division` and `NewLeague`, are factors.
+
+# Research Strategy
+In this notebook we will:
+
+- fit both Ridge and Lasso. 
+- run on the training and test data 70% split, and with 10-fold cross-validation.
+- select the best tuning parameters for each model. Both Ridge and Lasso use `glmnet`, and there are tuning parameters available.
+- refit on the entire dataset.
+
+# Tidy Modeling
+
+## Data Prep
+A `tidymodels` split uses `rsample::initial_split()` and define the training and testing datasets.
+
+```{r}
+# takes .7 of data for training
+split <- initial_split(Hitters, prop = .7) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data); dim(test_data)
+set.seed(123) # Ensures you get the exact same 10 folds every time
+Hitters.folds <- vfold_cv(Hitters, v = 10)
+```
+
+## Recipe
+
+*glmnet does not accept factor variables.* They must be converted to numeric indicator variables.
+
+*It's best to standardize values when using these methods.*  Why? In ordinary regression very large size drivers will get very big coefficients. Think if `Salary` were in dollars as opposed to thousands of dollars. A dollar `Salary` driver would be a much bigger number. So its coefficient would be a thousand times larger, and much harder to drive towards zero.  Instead, we want all the drivers to be on comparable scales. Hence we approve of standardizing them.  Then they are all on a scale centered at zero and with standard deviation 1- a z-score.
+
+In the recipe, any dataset with the proper rows and columns can be put into the 'data' parameter.  Override it when we fit models. 
+
+```{r}
+regularization_recipe <- 
+  recipe(Salary ~ ., 
+         data = train_data) %>% # any dataset with columns
+  step_dummy(all_nominal_predictors()) %>% # turns factors to numeric
+  step_normalize(all_numeric_predictors()) # normalizes numeric data
+```
+
+## Specifications
+Ridge and Lasso use similar specifications. The difference is the mixture parameter, 0 for ridge, 1 for lasso. Intermediate values are permitted, and we call these models ElasticNet models. We choose to tune for the best 'penalty' parameter in each case. And we create a spec for tuning 'mixture' as well.
+
+```{r}
+ridge_tune_spec <- linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("regression")
+lasso_tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("regression")
+elastic_tune_spec <- linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("regression")
+```
+
+## Workflows
+```{r}
+ridge_tune_workflow <- workflow() %>%
+  add_recipe(regularization_recipe) %>%
+  add_model(ridge_tune_spec)
+
+lasso_tune_workflow <- workflow() %>%
+  add_recipe(regularization_recipe) %>%
+  add_model(lasso_tune_spec)
+
+elastic_tune_workflow <- workflow() %>%
+  add_recipe(regularization_recipe) %>%
+  add_model(elastic_tune_spec)
+```
+
+Grids
+```{r}
+# Generate 50 different penalty values and 5 mixture values
+penalty_grid <- grid_regular(penalty(), levels = 50)
+two_param_grid <- grid_regular(
+  penalty(),
+  mixture(),
+  levels = c(penalty = 50, mixture = 5)
+)
+space_filling_grid <- grid_space_filling(
+  penalty(),
+  mixture(),
+  size = 50 # Tests exactly 50 unique combinations of penalty and mixture
+)
+```
+
+## Running Models
+```{r}
+ridge_tuning_results <- tune_grid(
+  ridge_tune_workflow,
+  resamples = Hitters.folds,
+  grid = penalty_grid # try different penalty values
+)
+
+lasso_tuning_results <- tune_grid(
+  lasso_tune_workflow,
+  resamples = Hitters.folds,
+  grid = penalty_grid # try different penalty values
+)
+
+elastic_tuning_results <- tune_grid(
+  elastic_tune_workflow,
+  resamples = Hitters.folds,
+  grid = space_filling_grid
+)
+```
+
+## Metrics
+```{r}
+collect_metrics(ridge_tuning_results)
+collect_metrics(lasso_tuning_results)
+collect_metrics(elastic_tuning_results)
+```
+
+```{r}
+select_best(ridge_tuning_results, metric = "rmse")
+select_best(lasso_tuning_results, metric = "rmse")
+select_best(elastic_tuning_results, metric = "rmse")
+```
+
+```{r}
+autoplot(elastic_tuning_results)
+```
+## Evaluate on test data
+You must first get an unbiased estimate of how your model performs on unseen data. You do this by training on your train_data and evaluating on your test_data.
+
+In `tidymodels`, there is a brilliant shortcut function called `last_fit()` that does this all in one step. It takes your finalized workflow and your original data split object (the one you made with `initial_split()`).
+
+Ridge.
+```{r}
+# 1. Get the best parameters from your space-filling grid
+ridge_best_params <- select_best(ridge_tuning_results, metric = "rmse")
+# 2. Lock those parameters into your workflow
+final_ridge_workflow <- finalize_workflow(ridge_tune_workflow,
+                                            ridge_best_params)
+# 3. Fit on training data and evaluate on test data simultaneously
+final_ridge_test_results <- last_fit(final_ridge_workflow, split)
+# View how it performed on the test data
+M_ridge <- collect_metrics(final_ridge_test_results) %>%
+  select(-.config, -.estimator) %>% 
+  gt() %>% tab_header(title="Ridge Model") %>% 
+  fmt_number(decimals=4)
+```
+
+Lasso.
+```{r}
+# 1. Get the best parameters from your space-filling grid
+lasso_best_params <- select_best(lasso_tuning_results, metric = "rmse")
+# 2. Lock those parameters into your workflow
+final_lasso_workflow <- finalize_workflow(lasso_tune_workflow,
+                                            lasso_best_params)
+# 3. Fit on training data and evaluate on test data simultaneously
+final_lasso_test_results <- last_fit(final_lasso_workflow, split)
+# View how it performed on the test data
+M_lasso <- collect_metrics(final_lasso_test_results) %>%
+  select(-.config, -.estimator) %>% 
+  gt() %>% tab_header(title="Lasso Model") %>% 
+  fmt_number(decimals=4)
+```
+
+Elastic.
+```{r}
+# 1. Get the best parameters from your space-filling grid
+elastic_best_params <- select_best(elastic_tuning_results, metric = "rmse")
+# 2. Lock those parameters into your workflow
+final_elastic_workflow <- finalize_workflow(elastic_tune_workflow,
+                                            elastic_best_params)
+# 3. Fit on training data and evaluate on test data simultaneously
+final_elastic_test_results <- last_fit(final_elastic_workflow, split)
+# View how it performed on the test data
+M_elastic <- collect_metrics(final_elastic_test_results) %>%
+  select(-.config, -.estimator) %>% 
+  gt() %>% tab_header(title="Elastic Model") %>% 
+  fmt_number(decimals=4)
+```
+
+```{r}
+wrap_plots(ncol=3,
+  wrap_table(M_ridge),
+  wrap_table(M_lasso),
+  wrap_table(M_elastic)
+)
+```
+The Lasso model is clearly superior.
+
+
+## Production model for future evaluations
+The production model uses all the data in `Hitters`.
+```{r}
+production_model <- fit(final_lasso_workflow, data = Hitters)
+# Extract all coefficients from the final fitted model
+final_coefs <- tidy(production_model)
+# View the raw data frame
+final_coefs %>% select (-penalty) %>% 
+  gt() %>% fmt_number(decimals=3)
+```
+
+The best lasso drops `RBI` and `CHits` and has 'penalty=1'.
+
+# Standard modeling
+
+## Data Prep
+To use this function we need to create a model matrix, necessary for using `glmnet`. $x$ holds the driver columns, and $y$ holds the target, `Salary`. This is for the entire dataset. 
+
+```{r}
+x = model.matrix(Salary~.,Hitters)[,-1] #leave out last column, the salary
+y = Hitters$Salary
+```
+
+## Validation
+Validating the model for robustness requires training it on one set of data and estimating the error on a separate different test set of data. We create a train and test data set.
+
+Randomly select a logical vector to select rows between 1 and the end. We select the same number, 184 of them, for the training set.
+```{r}
+set.seed (1)
+train= sample(1:nrow(x), 184)
+test= (- train )
+y.test=y[test]
+x.test=x[test]
+dim(x[train,]); dim(x[test,])
+```
+
+## Tuning
+By default the `glmnet()` function performs ridge regression for an automatically selected range of $\lambda$ values [Hastie and Qian, 2013](#r2).
+
+The range of values covers the full range of scenarios from the null model containing only the intercept, to the least squares fit. $\lambda$ near zero makes the model behave like ordinary regression; large values of $\lambda$ make the coefficient size more important than the sum of squares. 
+
+Note that by default, the `glmnet()` function standardizes the
+variables so that they are on the same scale. To turn off this default setting, use the parameter `standardize=FALSE`.
+
+Cross-validation is used to find the best value of $\lambda$, and in the case of elastic net, the best value of a 'mixture' parameter $\gamma$.
+```{r}
+set.seed (1) # make the run reproducible
+ridge.cv.out = cv.glmnet(x[train ,], y[train], alpha = 0)
+plot(ridge.cv.out, main="Ridge")
+bestlam.ridge = ridge.cv.out$lambda.min; 
+bestlam.ridge
+
+lasso.cv.out = cv.glmnet (x[train ,], y[train], alpha = 1 )
+plot(lasso.cv.out, main="Lasso")
+bestlam.lasso = lasso.cv.out$lambda.min; 
+bestlam.lasso
+
+elastic.cv.out = cv.glmnet (x[train ,], y[train], relax=TRUE) # gamma defaults
+plot(elastic.cv.out, main="Elastic")
+bestlam.elastic = c(elastic.cv.out$relaxed$lambda.min,
+                    elastic.cv.out$relaxed$gamma.min) 
+bestlam.elastic
+```
+
+## A Note on "Mixtures":
+Notice that in the `tidymodels` section, we tuned a 'mixture' parameter to blend the Ridge and Lasso models. However, in the standard `glmnet` code above, we set 'relax = TRUE'.
+
+While the `glmnet` documentation also refers to this as tuning a "mixture", it is actually blending two completely different mathematical concepts.
+
+- Elastic Net Mixture ($\alpha$): Blends the Lasso ($L_1$) and Ridge ($L_2$) penalties. This gives us the feature selection of Lasso while still handling correlated variables like Ridge. Standard cv.glmnet() cannot tune this automatically; you'd need extra code. `tidymodels` makes it a piece of cake. [Zou and Hastie, 2005](#r3)
+- Relaxed Lasso Mixture ($\gamma$): Blends a penalized Lasso model with an unpenalized standard Linear Regression. Because Lasso requires a harsh penalty to drop variables to zero, the surviving coefficients are often artificially shrunken too small (shrinkage bias). Relaxed Lasso fixes this: it uses Lasso to pick the best drivers, then runs a standard regression on only those drivers to un-shrink the coefficients. Standard `cv.glmnet()` can tune this automatically using relax = TRUE. `tidymodels` is not doing it; you would have to write code. [Meinshausen, 2007](#r4)  
+
+But they aren't the same. So strictly we are not comparing apples to apples for the `standard` and `tidymodels` Elastic Net sections.
+
+[Zou & Hastie (2005)](#r3) proves Elastic Net is for collinearity, and [Meinshausen (2007)](#r4) proves Relaxed Lasso is for shrinkage bias!
+
+The `tidymodels` Elastic Net is a technique often used in data mining. There's not so much value, in my opinion, in relaxing with an ordinary linear model for shrinkage bias. 
+
+## Model Fit
+We rerun the models on training data with the best parameters found by `cv.glmnet()`.
+```{r}
+ridge.fit = glmnet(x[train,], y[train],  
+                   alpha = 0, lambda = bestlam.ridge)
+lasso.fit =glmnet (x[train ,], y[train],
+                   alpha=1, lambda = bestlam.lasso)
+elastic.fit =glmnet (x[train ,], y[train],
+                   alpha=bestlam.elastic[2], 
+                   lambda = bestlam.elastic[1])
+```
+
+## Predictions
+```{r}
+ridge.pred = predict(ridge.fit,
+                     s=bestlam.ridge, 
+                     newx=x[test ,]) %>% 
+  as.numeric()
+
+lasso.pred = predict(lasso.fit,
+                     s=bestlam.lasso, 
+                     newx=x[test ,]) %>% 
+  as.numeric()
+
+elastic.pred = predict(elastic.fit,
+                     s=bestlam.elastic[1], 
+                     newx=x[test ,]) %>% 
+  as.numeric()
+```
+
+## Metrics
+```{r}
+rmse_vec(y.test, ridge.pred)
+rmse_vec(y.test, lasso.pred)
+rmse_vec(y.test, elastic.pred)
+```
+On the test data the lasso gives the best `rmse`.
+
+## Production
+Run the best model on the entire dataset, and get the coefficients.
+```{r}
+final.lasso.fit =glmnet (x, y,
+                   alpha=1, 
+                   lambda = bestlam.lasso)
+final.lasso.fit %>% coef
+final.lasso.fit %>% tidy() %>% select(term, estimate)
+```
+
+Definite Feature selection here. Only 18 drivers are needed.
+
+Predict on the entire dataset and compute rmse.
+
+```{r}
+drivers = final.lasso.fit %>% tidy() %>%
+  select(term, estimate) %>% slice(-1) %>% pull(term)
+drivers[drivers=="DivisionW"] = "Division"
+drivers
+final.lasso.pred = predict(final.lasso.fit,
+                     s = bestlam.lasso, 
+                     newx = x
+) %>% as.numeric()
+rmse_vec(Hitters$Salary, final.lasso.pred)
+```
+rmse is 303, not too bad.
+
+# Discussion
+Compare ridge regression with linear regression. For the linear regression since the drivers are in a matrix, not a data frame, the driver names all have x in front of them.
+
+```{r warning=FALSE}
+lm.fit=lm(Salary~., data = Hitters)
+lm.pred=predict(lm.fit)
+rmse_vec(Hitters$Salary, lm.pred)
+```
+```{r}
+wrap_plots(ncol=2,
+final.lasso.fit %>% tidy() %>%
+  select(term, estimate) %>% slice(-1) %>% 
+  gt() %>% 
+  tab_header(title="Lasso") %>% fmt_number(decimals=4) %>% 
+  wrap_table(),
+
+lm.fit %>% tidy() %>% 
+  select(term, estimate, p.value) %>% 
+  filter(p.value<= .05) %>% 
+  gt_add_significance() %>% 
+  tab_header(title="Linear") %>% fmt_number(decimals=4) %>% 
+  wrap_table()
+)
+```
+Lasso and Linear "select" different coefficients.
+
+- Lasso selected 13 coefficients and left out 6. 
+- Linear "selected" 6 coefficients significant at the .05 level. But you still have to collect all columns of drivers to get the predictions from this model.
+
+# Conclusion
+
+We used Ridge, Lasso, and ElasticNet on the Hitters dataset. The power of the `glmnet` package allowed us to use 10-fold crossvalidation to get a robust model. We found that Lasso was best, and reduced the number of drivers selected.
+
+Feature selection is the whole point. How much data do I have to collect to estimate Salary?
+
+The advantage is that it works by penalizing large coefficients via the $\lambda$ parameter.We used cross-validation to choose the best parameter set to produce the choice of coefficients to use.
+
+You will be pleased to know that Lasso regression is very commonly used in data mining today. 
+
+One reason is that it can be explained pretty well. 
+
+Another is that it often finds a simple model; Occam's Razor.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 6 Section 6.6 Ridge Regression and the Lasso, page 251ff.
+
+::: {#r2}
+2. Hastie, T. and Qian, J. (2013) glmnet Vignette. [https://hastie.su.domains/glmnet/](https://hastie.su.domains/glmnet/glmnet_beta.html#:~:text=It%20is%20known%20that%20the,the%20solution%20path%20very%20fast.)
+
+::: {#r3}
+3. Zou, H., & Hastie, T. (2005). Regularization and variable selection via the elastic net. Journal of the Royal Statistical Society: Series B (Statistical Methodology), 67(2), 301-320. DOI: http://dx.doi.org/10.1111/j.1467-9868.2005.00503.x
+
+::: {#r4}
+4. Meinshausen, N. (2007). Relaxed Lasso. Computational Statistics & Data Analysis, 52(1), 374-393. DOI: http://dx.doi.org/10.1016/j.csda.2006.12.019
+
+# Appendix
+Gemini on the Hitters data:
+
+Based on the structure of the Hitters dataset, multicollinearity (correlated variables) is by far the bigger issue, which is exactly why Elastic Net is such a good fit for it.
+
+Here is why collinearity dominates this specific dataset:
+
+The Nature of Baseball Statistics
+
+If you look at the columns in the Hitters data, they are fundamentally intertwined.
+
+- Single-Season Stats: `AtBats`, `Hits`, `Runs`, and `RBI` are all highly correlated. You generally cannot get a lot of hits without a lot of at-bats, and you rarely get a lot of runs without a lot of hits.
+- Career Stats: It gets even worse with the career columns. Years played is almost perfectly correlated with Career At-Bats (`CAtBat`) and Career Hits (`CHits`).
+    
+How This Affects the Models
+
+- Because these variables are essentially measuring the same underlying construct (offensive production) in slightly different ways, a standard Lasso model struggles. When Lasso sees `Hits`, `Runs`, and `RBI`, it panics because they are redundant. It often picks one arbitrarily (like `Hits`), gives it a massive coefficient, and forces the others (like `RBI`) to exactly zero. We actually saw this in the notebook: the final Lasso model dropped `RBI` and `CHits` completely, but kept `Hits` and `CRuns`. 
+  
+Why Elastic Net is the Better Fix Here
+
+While shrinkage bias is definitely happening in your Lasso model, fixing it with a Relaxed Lasso ($\gamma$) doesn't solve the underlying problem that Lasso just arbitrarily deleted `RBI` and `CHits` to begin with!
+
+Elastic Net ($\alpha$) is the better tool for Hitters because its Ridge component creates that "grouping effect." It recognizes that `Hits`, `Runs`, and `RBI` are a package deal. Instead of randomly dropping two of them, it keeps the whole group and shrinks their coefficients together, which usually results in a more stable, logical model for this kind of sports data.
+
+Here is why the data science community generally prioritizes Elastic Net over Relaxed Lasso for predictive tasks like the one in this notebook:
+
+- Prediction vs. Inference: Data mining is usually laser-focused on predictive accuracy—getting the lowest possible RMSE on unseen data. Elastic Net's ability to keep correlated variables together (the grouping effect) consistently improves predictive performance in these scenarios. Relaxed Lasso, on the other hand, is focused on inference—trying to get the exact, unbiased numerical value of a coefficient correct so you can explain it.
+- The Reality of Real-World Data: Multicollinearity is practically unavoidable in business and sports datasets. In the Hitters data, it is impossible to separate a player's Hits from their Runs or AtBats—they are all measuring the same underlying performance. Elastic Net was built specifically to handle this messy reality, whereas standard Lasso falls apart.
+- Sparsity Assumptions: Relaxed Lasso operates on the assumption that the "true" underlying model is extremely sparse—meaning almost all variables are completely useless, and only a tiny handful matter. While this is true in certain fields like genomics, it is rarely true in human-behavior datasets where many variables contribute a small amount of signal.
+
+Elastic Net is the more versatile, powerful, and widely used tool for predictive data mining.
+
+Do you believe what Gemini said?

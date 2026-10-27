@@ -1,0 +1,282 @@
+---
+title: Ch04 Lab 4_6 Confusion Matrix
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-10 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We sow connections between probability and statistics studies 
+---
+
+# Introduction
+We follow Chapter 4: Classification Lab, the same as [the textbook Reference 1](#r1). We use a confusion matrix to examine results of classification into two categories.  We will also use these methods to analyze the Caravan data set.
+
+# Research Question
+The first dataset is stock market data and the question is whether the previous 5 days (lags) can predict the percent gain today.
+
+What can we learn from a confusion matrix presentation of classification results?
+
+# Packages
+We load the required packages. To do KNN Analysis we need the `FNN` package. Confusion matrices are frequently made with the `caret` package, though `tidymodels` methods are equally good, and preferred. we show the old ones because they are common in literature.
+
+```{r}
+library(MASS) # lda
+library(FNN) # knn
+library(caret) # confusion matrix
+library(ISLR2) #package contains the data files
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+# resolve function conflicts
+```
+
+# Smarket Data
+The stock market data `Smarket` is in the `ISLR2` package.
+```{r dat}
+data(Smarket)
+Smarket %>% skim
+```
+
+# Research Problem
+We want to predict the future, namely whether the S&P 500 index will go up or down tomorrow, based on the last two days' prices and the volume. Because we want to predict the future, we need a validation procedure, which tests our model on new data, not the data we trained the model on. 
+
+# Validation Procedure
+Our validation Problem: predict year 2005 using years before that.
+
+Let's see how to use a training dataset to train the logistic regression, and then test it on a test dataset.  We create a training set to evaluate the classification. 
+
+This is a `tidymodels` workflow way to do it. The percentage is chosen to give the same proportions as in the original example.
+```{r}
+split <- initial_time_split(Smarket, prop = .799)
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+Smarket.2005 = test_data
+```
+
+There are 252 observations in the 2005 test data.  We will create a new vector to hold the target variable for the 2005 period. These are the outcomes we actually observed in 2005. Our prediction should come close to these.
+
+```{r}
+Direction.2005= test_data$Direction
+dim(Smarket.2005)
+```
+
+# Logistic Regression Model
+As on p 174 (160) we will use logistic regression to fit the best two lags (lowest p-values) on the training subset.
+
+```{r}
+glm.fit2 = glm(Direction~Lag1+Lag2,
+               data=train_data, family ="binomial")
+glm.probs2 = predict (glm.fit2 , Smarket.2005 , type="response")
+```
+
+What fraction should we use for Direction=Up?  The prior probability of Up in the dataset is:
+```{r}
+prior = sum((Smarket$Direction == "Up")*1) / nrow(Smarket)
+prior
+```
+We will use `prior` for the prior probability of "Up". A _positive_ direction is taken to be "Up".
+```{r}
+glm.pred2 = case_when( glm.probs2 > prior ~ "Up",
+                       .default = "Down") %>%
+  as.factor
+
+t2 = data.frame(Direction=Direction.2005, .pred = glm.pred2) %>% 
+  conf_mat(Direction, .pred)
+t2
+t2 %>% summary(event_level="second")
+```
+
+As you can see, the `accuracy`, or the probability of a correct prediction of "Down" is 46.4%, and the probability of being wrong is 53.6%. 
+
+The `detection_prevalence`, or the probability of a correct prediction of the so-called positive state "Up", is 11.9%.
+
+# Confusion Matrix
+
+The `caret` package has a useful confusion matrix function. Its argument is the contingency table `t2$table` produced above.
+
+Report the `caret` confusion matrix stats for the previous logistic regression with 2 lags.
+```{r}
+caret::confusionMatrix(t2$table, positive="Up") %>%
+    tidy() %>% 
+    gt_add_significance()
+```
+
+There is a lot more information here.  
+
+# Accuracy vs Balanced Accuracy
+[This article](#r2) explains why balanced_accuracy might be a better measure than accuracy. 
+
+# Caravan Dataset
+We apply KNN to the `Caravan` data set, p 179, sec 4.6.6. This is data on whether a caravan insurance policy was purchased. There are 86 drivers. The data is in the `ISLR2` package.
+```{r}
+data(Caravan)
+Caravan %>% skim
+# fraction of Purchase Yes/ all Purchase
+Caravan %>% group_by(Purchase) %>% 
+  summarize(count=n(), 
+            fraction = count/nrow(Caravan))
+```
+There are 5822 observations of 86 features. Purchases "Yes" are 5.98% of total observations.
+
+# Standardized Data
+
+According to p 179 in [Reference 1](#r1) we have to standardize the drivers, since KNN is subject to scale effects. We do so, and then we create a test dataset of the first 1000 items, using the balance of the dataset, 4822 observations, for training. We use the function `scale` to compute z-scores (standardized values) of the drivers.
+
+```{r}
+standardized.X=scale(Caravan[,-86]) #col 86 is the target
+# skim the result
+standardized.X %>% skim()
+```
+There are 5822 standardized observations, and 85 drivers.
+
+# Validation
+We need to test the data on part of the dataset and train it on the rest. We choose 1000 beginning records to test on, and the remainder 4822 to train on. It's close to an 80-20 rule often followed for selecting training and test data.
+
+The version of KNN that we're using requires separate objects for the drives and for the target.
+
+```{r}
+# make a vector with the first 1000 row numbers
+test=as.vector(1:1000)
+# build the test dataset for the drivers by selecting those rows
+test.X=standardized.X[test,]
+# bui8ld a training dataset with the rows not in test
+train.X=standardized.X[-test,] #this works
+# similarly set up the train and test target vectors of Purchase
+train.Y=Caravan$Purchase[-test]
+test.Y=Caravan$Purchase[test]
+```
+
+# KNN Model
+Run the `FNN::knn` model. Our supervision is limited to picking the number of nearest neighbors to consider. We begin with $k=1$, and we set a seed so that the code can be reproduced. The function produces the predicted classes of the Y variable.
+
+```{r}
+set.seed(1)
+knn.predc = FNN::knn(train.X, test.X, train.Y,k=1)
+CM1 = data.frame(Purchase = test.Y, 
+                 .pred = factor(knn.predc) ) %>% 
+  conf_mat(Purchase, .pred)
+CM1
+CM1 %>% summary(event_level = "second")
+```
+
+The `accuracy` is high at .883, but the `balanced_accuracy` is only about .54. This is because we have more in one category than the other. This situation is typical in medical experiments, when the number infected is a small part of the population. `detection_prevalence` is .076, so we are correctly predicting purchases 7.6% of the time.
+
+Now try 3 nearest neighbors.
+```{r}
+knn.predc3=knn(train.X, test.X, train.Y,k=3)
+CM3 = data.frame(Purchase=test.Y,
+           .pred = factor(knn.predc3)) %>% 
+  conf_mat(Purchase, .pred)
+CM3
+CM3 %>% summary(event_level = "second")
+```
+
+The `accuracy` is .925 but `balanced_accuracy` is down to .53. It is being buoyed up by the large number of "No" cases. `detection_prevalence`, the positive state, is .026.
+
+Now try 5.
+```{r}
+knn.predc5=knn(train.X,test.X,train.Y, k=5)
+CM5 = data.frame(Purchase=test.Y,
+           .pred = factor(knn.predc5)) %>% 
+  conf_mat(Purchase, .pred)
+CM5
+CM5 %>% summary(event_level = "second")
+```
+
+Accuracy is 93%, but Balanced Accuracy is going up to 60%.  But not much, so we might accept this model for prediction.
+The `accuracy` is .935 but `balanced_accuracy` is .53. It is being buoyed up by the large number of "No" cases. `detection_prevalence`, the positive state, is .014.
+
+We will have to live with the fact that we are often wrong when we predict "Yes".
+
+# Logistic Model
+
+Fit a logistic model, p181. First construct the standardized dataframe.
+```{r}
+df_train = data.frame(train.X, Purchase = train.Y)
+df_test = data.frame(test.X, Purchase = test.Y)
+```
+
+
+```{r}
+glm.fit = glm(Purchase ~ ., 
+              data=df_train, 
+              family=binomial)
+glm.probs = predict(glm.fit, df_test, type="response")
+dim(glm.probs)
+```
+
+We use a prior probability of `prior` for tossing a fair coin.
+```{r}
+glm.pred = case_when(glm.probs > prior ~ "Yes",
+                     .default = "No")
+T50 = data.frame(Purchase = test.Y, 
+                 .pred = factor(glm.pred)) %>% 
+  conf_mat(Purchase, .pred)
+T50
+T50 %>% summary(event_level = "second")
+```
+
+`accuracy` 0.935 when it predicts "No" but detection_prevalence is .006 when it predicts "Yes".  Since we want it to predict Yes when it's appropriate, this is not good.
+
+# Visualizing a Confusion Matrix
+
+Here is a [built-in R function](#r3) to make a visualization of a confusion matrix. I don't think it is very helpful.
+
+```{r}
+cf = T50$table # from the last example.
+fourfoldplot(cf,color=c("yellow","pink"),
+             main = "Confusion Matrix")
+```
+You can make a better plot with `ggplot`.
+
+```{r}
+# get the data set up
+confusion_matrix=as.data.frame(T50$table)
+confusion_matrix
+```
+
+Now plot it with `ggplot()`.
+
+```{r}
+ggplot(data = as.data.frame(confusion_matrix),
+       mapping = aes(x = Prediction,
+                     y = Truth )) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = sprintf("n=%3.0f\n%3.1f%s",
+                Freq, 100*Freq/sum(Freq), "%")),
+            vjust = 1) +
+  scale_fill_gradient(low = "lightblue",
+                      high = "red2",
+                      ) +
+  theme_bw()
+```
+You might like this one better, since the colors tell you the 'hot' sections of the quadrangle.
+
+# Conclusion
+
+We performed two analyses, first on the stockmarket data `Smarket` and then on the insurance policy data `Caravan`.  We used `knn` and logistic regression on the `Smarket` data, and displayed the results using a confusion matrix. We also used logistic regression for the `Caravan` data, and observed the confusion matrix as a result. A pretty picture was made with a plotting routine.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification Section 4.6, pages 154-167.
+
+::: {#r2}
+2. Brodersen, Kay H., Cheng Soon Ong, Klaas E. Stephan, and Joachim M.
+Buhmann. 2010. "The balanced accuracy and its posterior distribution." [<DOI:
+10.1109/ICPR.2010.764>](http://mvpa.blogspot.com/2015/12/balanced-accuracy-what-and-why.html) 
+
+::: {#r3}
+3. [GeeksforGeeks](https://www.geeksforgeeks.org/visualize-confusion-matrix-using-caret-package-in-r/) www.geeksforgeeks.org (2023) Visualize Confusion Matrix Using Caret Package in R
+Last Updated : 19 Dec, 2023.  (https://www.geeksforgeeks.org/visualize-confusion-matrix-using-caret-package-in-r/)
+
+
+
+
+
+

@@ -1,0 +1,299 @@
+---
+title: Ch04 Lab Logistic Regression
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-09  Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We run a logistic model with tidy methods following [ISLR](#r1) Chapter 4 Section 4.6.1 and 4.6.2.
+---
+
+# Introduction
+We follow [the textbook](#r1) Chapter 4: Classification, the same as chapter 4.6.1 and 4.6.2 lab on page 154ff.
+
+# Packages
+We load the required packages.
+```{r}
+library(ISLR2) #package with data files
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Data
+
+The data is in the `ISLR2` package. It consists of S&P 500 stock index data from 2001 to 2005, with 1250 observations. That is daily observations from the days the market was open.
+
+```{r}
+data(Smarket)
+Smarket
+```
+
+We notice there are 1250 days of observations. There is today's price, the volume, the year, and five lags of the price, that is, the previous price.  All are market closes.
+
+- Year The year that the observation was recorded
+- Lag1 Percentage return for previous day
+- Lag2 Percentage return for 2 days previous
+- Lag3 Percentage return for 3 days previous
+- Lag4 Percentage return for 4 days previous
+- Lag5 Percentage return for 5 days previous
+- Volume Volume of shares traded (number of daily shares traded in billions)
+- Today Percentage return for today
+- Direction A factor with levels Down and Up indicating whether the market had a positive or negative return on a given day
+
+# Data Description
+A summary via `skim` shows if there is missing data, and shows the ranges of the columns.
+```{r sum}
+Smarket %>% skim
+```
+
+There are 5 years of data, none missing.  Note that the `Direction` column tells which direction the prices went from the previous day.  That is the target variable.
+
+# Problem
+
+What we want to do is develop a model that can predict from yesterday's price, and possibly from the prior several days' prices, the `Direction`: whether the S&P 500 index will go Up or down tomorrow. We could make a lot of money trading on this prediction if the model is good at it.
+
+Because we want to predict Up or Down, this is a *Classification*, not a regression. Nevertheless, we use similar tools. Our task is to produce a classification model, here a *Logistic Regression*, and see how good a job it can do predicting the Direction. 
+
+# Validation of Models
+
+We seldom if ever want to make predictions over again by using the data we relied on to build the model. *Robustness* is the term used to describe how well a model performs on data and conditions different from that used to estimate the model.
+
+Validation of a model is the process of improving robustness. It is very important in telling us whether a model is able to predict results on new data, not the data it was created with.  It's normally done by training the model on certain data, and then estimating how well it can predict on a test data set different from the training data. 
+
+This process is very important when you have time-series data such as stock market data. And it's easy to understand why. You want to predict the future! But you only have data from the past.
+
+We will use the first four years as training data for our model. Then we will see how well we can predict the last year, 2005, using the model.
+
+# Visualization
+
+A pairs plot can be helpful. We leave out the target column, and the Year.
+```{r fig.width=10, fig.height=7}
+ggpairs(Smarket %>% select(-Year, -Direction), progress=F) #uses package GGally
+```
+
+The correlations are all low, which makes us think it will be hard to make predictions.
+
+# Volume
+
+We will graph the volume of trade in the S&P 500 index by temporarily creating a column called day, which just numbers the rows (days of trading) and plotting Volume against it, for a time history.
+
+```{r}
+ggplot(Smarket %>% mutate(day=1:nrow(Smarket))) +
+  geom_point(aes(x=day,y=Volume)) +
+  geom_smooth(aes(day, Volume), method='loess', formula='y~x', color="blue")
+```
+
+As time goes on there is greater trading volume. The increase was slow, and then sped up markedly around day 900. We added a 'loess' smoothing estimate to approximate the trend. `loess` stands for LOcal regrESSion, according to [this source](#r2).
+
+# Logistic Regression
+Logistic Regression is one of the simplest classification methods. Even though it is called Regression, it isn't exactly what we have studied previously. That is because ordinary regression assumed the target and drivers were normally distributed random variables. 
+
+But our target here is a binary variable with only two choices Up or Down, so it might be distributed like a binomial distribution.  You were exposed to these in statistics; a binomial distribution results from coin tossing experiments, and the probability of a head might or might not be 1/2; the coin may be biased.
+
+To execute Logistic Regression in R we need to use **IMPORTANT!** `glm()` "generalized linear model" which is DIFFERENT FROM `lm()`. It's also included in the standard R.
+
+`glm` does not assume the response variable is normally distributed, as it might be if it was a continuous response (decimals rather than say Yes or No). Here we are predicting `Direction` of the market, which is Up or Down for logistic regression. 
+
+The target, `Direction` is a binary variable (or factor) "Up" or "Down", and we could assume such a variable is distributed as a binomial distribution, such as coin
+tossing. So the 'family' parameter is "binomial". In fact, the stock market is usually seen as random on a day-to-day basis, so a binomial distribution with probability of around 1/2 is a good choice.
+
+There are other choices but for logistic regression we use binomial.
+
+# First Try
+
+We first run logistic regression using all the lags and `Volume`.
+
+```{r}
+glm.fit=glm(Direction~Lag1+Lag2+Lag3+Lag4+Lag5+Volume, 
+            data=Smarket, family=binomial)
+glm.fit %>% glance %>% gt_add_significance()
+glm.fit %>% tidy %>% gt_add_significance()
+```
+
+The `glance` function lets us build a pretty table, which shows us the AIC, which gives us the 'quality' of the model, much as the Adjusted R-squared does for ordinary regression. The tidy coefficient table shows none of the coefficients are significant at the .05 level.
+
+These don't mean a lot except for the AIC/BIC. We can measure quality with those metrics.
+
+# Prediction
+
+We use the `predict()` function. For modern tidy methods we use `augment`.
+
+The logistic regression model calculates for each observation the
+__probability that the target is in the 1-state of the target variable__, Up in this case.
+
+Choose "response" for the parameter type on scale of the response variable, namely probabilities.
+Thus for a default binomial model the default predictions are of log-odds (probabilities on logit scale) and type = "response" gives the predicted probabilities. We report the first 10 prediction probabilities. Here using 'newdata=Smarket" we are predicting on the whole dataset from 2001 to 2005.  It isn't ideal for analysis. 
+
+Next we have to convert probabilities to predictions of Down or Up. Create a vector which is "Up" when the probability is > 0.5, and "No" otherwise. This is done in a new column `predDirection` computed with a very small bit of programming. 
+
+What do probabilities mean? They are numbers between 0 and 1 and represent the probability that the outcome is one of the choices, Up or Down. Which one? Use the `contrasts()` function.
+```{r}
+Smarket %>% pull(Direction) %>% contrasts
+```
+
+So a probability over 0.5 represents a more likely Up outcome. Here's the prediction using `augment()`, which works for logistic regression. In the display scroll right to see the predicted Direction values.
+
+```{r}
+pglm.probs.aug = augment(glm.fit, newdata=Smarket,
+                         type.predict="response") %>%
+  mutate(predDirection = 
+           as.factor(case_when(.fitted>=.5 ~ "Up", .default = "Down")))
+pglm.probs.aug
+```
+
+Note we as analysts are making a choice here, that Up/Down is distributed like fair coin
+tossing, each with probability 1/2. That is very likely for stock market
+prices, as lots of research has shown; daily prices directions are really like
+coin tossing.
+
+There are other choices, if we think the prior probability of Up is different
+from 1/2. For this stock market that would not be a good choice, though we could use the actual percentages of Up and Down in the training data. that is just over .5.
+
+# Confusion Matrix
+Next, show a table of results called a *confusion matrix* comparing the predictions to the data. We always put the actual values first (in the rows) and predicted values second (in the columns). The tidy way to do this uses `yardstick::conf_mat` function.
+```{r}
+CM = pglm.probs.aug %>% conf_mat(Direction, predDirection)
+CM
+CM %>% summary
+```
+
+You can see that prediction matched observed 507 + 145 times (diagonal of table) out of the total of 1250. Both these calculations give the same answer.
+
+```{r warning=FALSE}
+(507+145)/1250
+mean(pglm.probs.aug$predDirection==pglm.probs.aug$Direction)
+pglm.probs.aug %>% accuracy(Direction, predDirection)
+CM %>% summary %>% filter(.metric=="accuracy")
+```
+
+Based on this data, the model's prediction for the next day is a bit more likely to be right than wrong. This metric of model quality is called **accuracy**.
+
+The `yardstick` package is a tidy way to summarize performance measures for a confusion matrix.
+```{r}
+CM %>% summary
+```
+
+# Confidence Intervals
+
+You will notice that with this binary logistic regression we can't compute
+confidence intervals the way we did for ordinary linear regression.
+
+That is very important because ideally we should provide estimates of our confidence in our predictions!! Accuracy is one such metric, but we need to validate our model against different data.
+
+# Validating a Model
+
+We should train the regression (get the coefficients for
+prediction) on some early data (Stock prices are a time series after all, and
+we want to predict in the future) and then testing the regression on some later data.  We will create train and test data sets.
+
+# Train and Test Datasets
+
+The `Smarket.train` set is any `Year` before 2005; for stocks that is appropriate, since we want to test in on later predictions.
+
+```{r}
+Smarket.train = Smarket %>% filter (Year<2005)
+Smarket.test = Smarket %>% filter (Year>=2005)
+```
+
+The cheatsheet for data transformation is very helpful. RStudio Menu > Help > Cheatsheets > Data Transformation with `dplyr`.
+
+I think this is very intuitive and you do not need logic to figure out what is what.
+
+# Train model
+
+We run the logistic regression on the training dataset `Smarket.train` only
+Naturally the result will be different from what it was before.
+
+```{r rtrain}
+glm.fit1=glm(Direction~Lag1+Lag2+Lag3+Lag4+Lag5+Volume,
+             data=Smarket.train, family=binomial)
+glm.fit1 %>% glance() %>% gt_add_significance()
+glm.fit1 %>% tidy() %>% gt_add_significance()
+```
+
+Note we used a subset of the entire data set of all 1250 observations, just the training data, 998 observations. Again we see the coefficients are not significantly different from 0.
+
+# Predicting on test data
+
+Use the function `augment()` with the new model, `glm.fit1`, to predict the test data set values.
+
+```{r}
+CM1 = glm.fit1 %>% augment(newdata=Smarket.test, 
+                           type.predict="response") %>% 
+  mutate(predDirection = 
+           as.factor(case_when(.fitted>=.5 ~ "Up", .default = "Down"))) %>% 
+  conf_mat(Direction, predDirection)
+CM1
+CM1 %>% summary
+```
+
+Anything over 1/2 is Up. The test set only has 252 observations instead of 1250.
+
+The `accuracy` metric tells us we were only right 48% of time. It's a different prediction than before. It's also predicting Down more often than Up. On test data this model does not do so well.
+
+# Fewer drivers
+
+We now include only 2 lags in a regression on the train data. Perhaps this will result in a better prediction on the test data. We have to go through the whole train/test routine. We put all the steps in one code chunk.
+
+```{r 2lag}
+glm.fit2 = glm(Direction~Lag1+Lag2, data=Smarket.train, family=binomial)
+CM2 = glm.fit2 %>% augment(newdata=Smarket.test, 
+                           type.predict="response") %>% 
+  mutate(predDirection = 
+           as.factor(case_when(.fitted>=.5 ~ "Up", .default = "Down"))) %>% 
+  conf_mat(Direction, predDirection)
+CM2
+CM2 %>% summary
+```
+
+How often did we guess right (Accuracy)?
+```{r}
+CM2 %>% summary %>% filter(.metric=="accuracy")
+```
+
+We got a better prediction with this model, we are right almost 56% of time. The simpler model actually did better on the test data!!
+
+It appears that too many lags 'confuses' the prediction!
+
+# Specific Prediction
+
+Let's see how to predict tomorrow from a specific prior two days' lags. This is what a user of the model would do if she wants to make a bet on the direction of tomorrow's S&P 500 index movement. 
+
+We will do two examples, (Lag1 = 1.2, Lag2 = 1.1),  and (Lag1=1.5, Lag2=-0.8). What would we predict for the Direction? Make a data frame for the two rows to predict.
+
+```{r}
+newd = data.frame(Lag1=c(1.2, 1.5),Lag2=c(1.1, -0.8))
+newd
+```
+
+```{r}
+P3 = glm.fit2 %>% augment(newdata=newd, type.predict="response") %>% 
+  mutate(predDirection = 
+           as.factor(case_when(.fitted>=.5 ~ "Up", .default = "Down"))) 
+P3
+```
+The two cases predict 47.9% and 49.6% probability of the market being Up the next day. So the model says "Down" for these two days.
+
+# Conclusion
+
+We have shown how to use R to construct the solution shown in Section 4.6.1 and 4.6.2 of [the text](#r1).
+
+Along the way we learned about validation and why we need to create train and test datasets. For this time series data the train data is the earlier data, and the test data is later.  If it were not time series, we could resort to random sampling of the original data for the train and test datasets. We will see that practice later on.
+
+Now you know one way to build a model for a classification.
+
+Classification models like this also work in `tidymodels` workflows.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, Sections 4.6.1 and 4.6.2 lab, page 154ff.
+
+::: {#r2}
+2. [Sanderson, S. (2006)](https://www.spsanderson.com/steveondata/posts/2023-11-22/index.html)
+:::

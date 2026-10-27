@@ -1,0 +1,200 @@
+---
+title: Ch05 5_1 Validation Set
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2025-08-18 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+abstract: |
+  We solve Section 5.1.1 of the text showing validation applied to a simple classification.
+---
+
+#  Introduction
+This paper is based on [the text](#r1) Section 5.1.1, using the Auto dataset, from the `ISLR2` package.
+
+# Packages
+First we load the relevant packages to our notebook session.
+
+```{r}
+library(glmnet) # for ridge and lasso
+library(ISLR2) #package contains the data files, but not this one
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+
+# Data
+
+The data come from the `ISLR2` package.
+
+```{r}
+data(Auto, package="ISLR2")
+Auto %>% skim
+```
+
+# Data Wrangling
+The column `name` has a lot of discrete values and is not very good for regression or other analyses.
+
+# Research Problem
+
+We'll try to fit a _polynomial model_ to predict mpg (the target) from polynomial functions of horsepower, the driver variable. We want to understand how crossvalidation works in this simple example, and uncover some of the pitfalls. We first plot `mpg` vs `horsepower` to guess at the polynomial relation.
+
+```{r}
+ggplot(Auto, aes(mpg, horsepower)) +
+  geom_point()
+```
+
+It's a curve, so a square (k=2 in the `poly` function) should be a good fit.
+
+In particular, we want to reproduce Figure 5.2 in [the text](#r1). It shows the results of the validation set approach. The left panel graphs Mean Squared Error (MSE) as a function of the order of the polynomial used for the model, for a single split, or partition of the data into training and test datasets.  The right graph shows MSE computed in 10 separate splits of the data. 
+
+We can compute RMSE using the `yardstick::rmse_vec()` function. Squaring it gives MSE. `yardstick` package is included in `mbadtools`.
+
+# Training and Test data
+
+We first divide the dataset into training and test portions. The `sample()` function randomly picks row numbers from the total number of rows of the dataset.  Then we select the rows using the `train` vector and the `-train` vector for the test data. To make results reproducible we set the seed of the random number generator to 1. We select half the data for training, leaving half for test.
+
+```{r}
+set.seed(1)
+train=sample(nrow(Auto), nrow(Auto)/2, replace=FALSE)
+train.auto=Auto[train,]
+test.auto=Auto[-train,]
+
+train.auto %>% gt() %>% opt_interactive() # puts scrollbar on bottom
+test.auto %>% gt() %>% opt_interactive()
+```
+
+
+# Linear Model
+
+Next we fit the linear model `mpg`~`poly(horsepower,k)` on the training dataset. Start with k=1, a true linear model.
+
+```{r}
+lm.fit1=lm(mpg~poly(horsepower),data=train.auto)
+lm.fit1 %>% glance() %>% gt_add_significance()
+lm.fit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+To get `rmse`, you can calculate it, but this is on the training dataset, NOT the test dataset. We don't care about it, and it will almost certainly be smaller than on the test data.
+
+```{r}
+rmse1 = rmse_vec(train.auto$mpg, lm.fit1$fitted.values)
+rmse1
+```
+
+Next we calculate it on the test data. It is the difference between the observed
+values and predicted values of `mpg` for the proper fit and test data sets. 
+
+```{r}
+RMSE1 = rmse_vec(test.auto$mpg, predict(lm.fit1,test.auto))
+RMSE1
+```
+
+Next we try all polynomials of horsepower from 1 to 10. We want to see the best fit in terms of RMSE on the test data. We set up a vector `RMSE` to hold the 10 results. Then display the vector of RMSEs for the different predictions on the test data set. Because of the set.seed(1) we should get the same answer every time.
+
+```{r}
+RMSE=c()
+for (i in 1:10) {
+  f = lm(mpg~poly(horsepower,i), data=train.auto)
+  RMSE[i] = rmse_vec( predict(f,test.auto), test.auto$mpg )
+}
+RMSE0 = RMSE %>% enframe(name="poly_deg", value="rmse")
+RMSE0
+```
+# Figure 5.2 Left Graph
+
+We use `ggplot` to construct this graph.
+
+```{r}
+ggplot(RMSE0) +
+  geom_line(aes(poly_deg, rmse), color="red") +
+  geom_point(aes(poly_deg, rmse), color="red") +
+  coord_cartesian(xlim=c(1,10))+
+  scale_x_discrete(limits=factor(1:10)) +
+  labs(x = "Polynomial degree", y ="Root Mean Squared Error")
+```
+
+The graph shows that k=2, a quadratic polynomial, gives a good and simple result on the test data.
+
+# Figure 5.2 Right Graph
+Here we plot the results of the 10 CV repetitions for each polynomial degree from 1 to 10.
+
+For the right graph we need to repeat the for loop above inside another for
+loop, setting a different seed each time. `RMSE3` is now a matrix of values with rows the different seeds (10 CV tries), and columns the `rmse` for different polynomials (10 of them).
+
+```{r}
+RMSE3=matrix(nrow=10, ncol=10) 
+# columns are the polynomial degrees
+for (k in 1:10) { # these rows are the CV folds
+  set.seed(k+20)
+  tr = sample(nrow(Auto),nrow(Auto)/2, replace=FALSE)
+  train.df = Auto[tr,]
+  test.df =  Auto[-tr,]
+
+  # calculate the rmse values for each poly deg on the fold.
+  for (i in 1:10) {
+    f = lm(mpg~poly(horsepower,i), data=train.df)
+    RMSE3[k,i] = rmse_vec(test.df$mpg, predict(f,test.df))
+  }
+}
+```
+
+To get scale right, we have to find the largest number in RMSE3 and which row (k) it is in. We will plot that row first. Or maybe not if it is one outlier.
+
+```{r}
+w = which(RMSE3==max(RMSE3), arr.ind=TRUE)
+w
+RMSE3[w[1],w[2]]
+
+summary(RMSE3)
+```
+
+# Use ggplot
+We can do it with ggplot.
+
+```{r}
+# transpose of RMSE3 has poly degrees as rows and folds as columns
+# we add degree to each row
+d = data.frame(poly_deg=1:10, rmse=t(RMSE3) )
+d
+# now pivot longer 
+dl = d %>% 
+  pivot_longer(!poly_deg, names_to = "fold", values_to = "rmse") # %>% 
+```
+
+Instead of the figure, I like the boxplot, which shows medians and IQRs of the fold values of `rmse`.
+```{r}
+g = ggplot(dl) + 
+      geom_boxplot(aes(poly_deg, rmse, color=factor(poly_deg))) +
+      labs(y="Root Mean Squared Error") + 
+      scale_x_discrete(limits=factor(1:10), name="Degree of Polynomial") +
+      guides(color = guide_legend("Poly degree")) +
+      theme_bw()
+g
+```
+
+# Discussion
+
+1. The estimated MSE of 10 different test sets has large variability!!!!
+
+2. In the validation approach, only a subset of the observations— those
+that are included in the training set rather than in the validation
+set— are used to fit the model. Since statistical methods tend to perform
+worse when trained on fewer observations, this suggests that the
+validation set error rate may tend to overestimate the test error rate
+for the model fit on the entire data set.
+
+This shows us why we need cross-validation of various kinds, covered in subsequent sections.
+
+# tidy?
+See [Ch05 Lab Crossvalidation](#r2) for a tidy version. It's quite a bit simpler.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 5 Section 1.1, page 176-178.
+
+:::{#r2}
+2. Hartman, B. (2026) Ch05 Lab Crossvalidation. Accessible in Canvas at [Ch05 Lab Crossvalidation.nb.html](https://learn.stfrancis.edu/courses/1198828/files/66330137?wrap=1)

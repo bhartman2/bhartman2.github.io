@@ -1,0 +1,670 @@
+---
+title: Ch05 Lab Crossvalidation
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-13 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We demonstrate crossvalidation methods, a number of techniques of increasing robustness, on the Auto data. We use standard and tidy methods.
+---
+
+# Introduction
+In this Notebook we will use crossvalidation methods, demonstrating a number of techniques of increasing robustness. We follow Section 5.3 of [the textbook](#r1). We will show some `tidymodels` methods and some older ones for cross-validation dataset construction.
+
+# Packages
+First we load the relevant packages to our notebook session.
+```{r}
+library(ISLR2) # package contains the data files
+library(boot) # for bootstrap
+library(mbadtools, quietly=TRUE) # MBAD standard packages
+```
+
+# Data
+For the first approaches we will use the `Auto` dataset from the `ISLR2` package.
+
+```{r}
+data(Auto)
+Auto %>% skim
+```
+
+There are 392 observations (rows) and 9 columns.  No rows seem to have missing data. 
+
+Notice that `name` is a factor variable with very many (301) values, perhaps not the best way to use it. The columns `cylinders` and `origin` also have just a few values, and `year` takes on only values of specific years, despite all these columns being encoded as numbers '<dbl>' in the `skim()` output). These are possibilities to be used as factors in regressions, since the difference between the numbers in the column may not represent anything.
+
+# 5.3.1 The Validation Set Approach
+The validation set approach is a simple way to cross-validate. We simply divide the data into training and test (or validation) datasets. Then we train the model on the training dataset and test its accuracy on the test dataset. That's called validation.
+
+This procedure gives us some confidence about the robustness of our model-- its ability to make predictions on data different from what it was 'trained' or fit, on.
+
+To split the data into a training and test data set we can use random choice in this case. for time series data or data generated over time we might want to separate at a certain number of rows, using the later data for validation.
+
+For reproducibility, we set the seed of the random number generator to a specific integer. 
+
+- Old way: use the `sample()` function to select random rows. Here we randomly choose half the rows for training the model. Sometimes that is appropriate; sometimes an 80-20 rule is a good idea.
+
+This function by default samples without replacement, so that row numbers in the training sample are never repeated; for documentation we include the parameter `replace=FALSE` in the function. The variable `train` will hold the row numbers of the rows selected for training. 
+
+## standard split
+```{r}
+set.seed(1)
+train.rows=sample(nrow(Auto), nrow(Auto)/2, replace=FALSE)
+train.rows %>% glimpse
+```
+We could create the data by selecting the row numbers in `train`
+```{r}
+Auto.train = Auto %>% slice(train.rows)
+Auto.test = Auto %>% slice(-train.rows)
+dim(Auto.train); dim(Auto.test)
+```
+
+## `tidymodels` split
+- use `rsample::initial_split()` and define the training and testing datasets.
+```{r}
+set.seed(2026)
+# takes first half of data
+split <- initial_split(Auto, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data); dim(test_data)
+folds_10 = vfold_cv(train_data, v = 10)
+```
+
+## Fit Model
+Next we fit a simple regression model to the training data. Notice that the `subset` parameter select only some of the rows for the training run. We show the summary, the residual graphs, and the MSE as a single number measure of the performance.
+
+Standard; pec and fit in same line
+```{r}
+lm.fit1 =lm(mpg~horsepower, data=Auto.train)
+```
+
+`tidymodels` model spec (can be reused)
+```{r}
+lm_spec <- linear_reg() |>
+  set_engine("lm")
+```
+
+`tidymodels` workflow and fit
+```{r}
+lm.fit1t = fit(lm_spec, mpg~horsepower, data=train_data)
+```
+
+Standard way to report results
+```{r}
+lm.fit1 %>% glance() %>% gt_add_significance()
+lm.fit1 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+# augment makes predictions and adds the data and residuals; 
+# default is on the dataset the model was fitted with
+RMSE1 = lm.fit1 %>% augment %>% yardstick::rmse(mpg, .fitted); RMSE1
+lm.fit1 %>% gg_residual_plots()
+```
+
+`tidymodels` way uses the tidy object `lm.fit1t`
+```{r}
+lm.fit1t %>% glance() %>% gt_add_significance()
+lm.fit1t %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+# augment makes predictions and adds the data and residuals; 
+# default is on the dataset the model was fitted with
+RMSE1t = lm.fit1t %>% 
+  augment(new_data=train_data) %>% yardstick::rmse(mpg, .pred); RMSE1t
+lm.fit1t %>% gg_residual_plots(new_data = train_data)
+```
+
+The regression is not particularly good, judging by the residual plots. The R-squared is 63% and the `horsepower` driver is significant at a high level.
+
+## Viz
+```{r}
+# standard
+ggplot(Auto.train) +
+  geom_point(aes(x=horsepower, y=mpg)) +
+  geom_abline(aes(intercept=coef(lm.fit1)[1], 
+                  slope=coef(lm.fit1)[2]), 
+              color="red", linetype="dashed")
+#tidymodels
+ggplot(train_data) +
+  geom_point(aes(x=horsepower, y=mpg)) +
+  geom_abline(aes(intercept=lm.fit1t %>%
+                    tidy %>% slice(1) %>% pull(estimate), 
+                  slope=lm.fit1t %>%  
+                    tidy %>% slice(2) %>% pull(estimate)
+                  ),
+              color="red", linetype="dashed")
+
+```
+We can see that the data is curved, whereas the regression line misses the low-horsepower trend up and the high-horsepower trend down.
+
+## Cross-validation
+However, a more robust measure of the quality of the regression is how it performs on the test data. So we will predict the `mpg` and calculate the RMSE on the test data.
+
+```{r}
+# standard way
+RMSE1.test = lm.fit1 %>%
+  augment(newdata=Auto.test) %>%
+  yardstick::rmse(mpg, .fitted); RMSE1.test
+
+# tidymodels way
+RMSE1t.test = lm.fit1t %>% 
+  augment(new_data=test_data) %>% yardstick::rmse(mpg, .pred); RMSE1t
+```
+
+We expect this RMSE to be larger than that calculated on the training data itself, since the data in the test portion is completely new to the model. But surprisingly it is smaller, though just a little.  That's due to the random selection of training data (and therefore test data).
+
+```{r}
+# standard
+lm.fit1 %>%
+  augment(newdata=Auto.test) %>%
+  ggplot() +
+  geom_point(aes(horsepower, mpg))+
+  geom_line(aes(horsepower, .fitted), 
+            color="red", linetype="dashed")
+# tidymodels
+lm.fit1t %>%
+  augment(new_data=Auto.test) %>%
+  ggplot() +
+  geom_point(aes(horsepower, mpg))+
+  geom_line(aes(horsepower, .pred), 
+            color="red", linetype="dashed")
+```
+
+Again we see a curve that the regression does not capture.
+
+## YVP plots
+These don't require coding and are just as informative.
+```{r}
+# standard
+lm.fit1 %>% gg_residual_plots(items = 8)
+# tidymodels
+lm.fit1t %>% gg_residual_plots(items=8, new_data = train_data)
+```
+
+## Seeking a better regression
+Now we will try second and third order polynomials, to try to remove the curve in the residuals. Again we will run on the training data, and test on the test data.
+
+```{r}
+# poly of degree 2
+lm.fit2 = lm(mpg~poly(horsepower,2), data=Auto.train)
+RMSE2.test = lm.fit2 %>%
+  augment(newdata=Auto.test) %>%
+  yardstick::rmse(mpg, .fitted); RMSE2.test
+lm.fit2 %>% gg_residual_plots()
+# tidymodels
+lm.fit2t = fit(lm_spec, mpg~poly(horsepower,2), data=train_data)
+RMSE2t.test = lm.fit2t %>% 
+  augment(new_data=test_data) %>% yardstick::rmse(mpg, .pred); RMSE2t.test
+lm.fit2t %>% gg_residual_plots(new_data = test_data)
+```
+
+These are better. 
+
+Try degree 3.
+```{r}
+# standard
+lm.fit3 = lm(mpg~poly(horsepower,3), data=Auto.train)
+RMSE3.test = lm.fit3 %>%
+  augment(newdata=Auto.test) %>%
+  yardstick::rmse(mpg, .fitted); RMSE3.test
+lm.fit3 %>% gg_residual_plots()
+# tidymodels
+lm.fit3t = fit(lm_spec, mpg~poly(horsepower,3), data=train_data)
+RMSE3t.test = lm.fit3t %>% 
+  augment(new_data=test_data) %>% yardstick::rmse(mpg, .pred); RMSE2t.test
+lm.fit3t %>% gg_residual_plots(new_data = test_data)
+```
+
+The degree 3 polynomial is about the same as the degree 2 polynomial on the test data, and both are lower than the simple regression model.
+
+The degree 2 model is simpler and just about as good in RMSE on the test data, so we call it best. 
+
+Looking at the summary and residuals of the best model, we get
+```{r}
+summary(extract_fit_engine(lm.fit2t))
+lm.fit2t %>% gg_residual_plots(new_data = test_data)
+```
+The R-squared is 67%, and the residuals do not look too much better. They are not bad, though.
+
+Plotting the data and the regression polynomial, we see
+
+```{r}
+lm.fit2t %>% gg_residual_plots(new_data = test_data, items=8) +
+  annotate("text", x=10, y=40, 
+           label=paste0("RMSE=", 
+                        RMSE2t.test$.estimate %>%
+                          round(digits=2)) )
+```
+Notice how much better the fitted line looks in predicting `mph` from `horsepower`. This model has the best RMSE of the three tried, when applied to the test data. There is little evidence the polynomial of degree 3 model is better, and it is more complex to explain.
+
+# 5.3.2 Leave-One-Out Cross-Validation
+A stronger approach is called Leave-One Out Cross-validation (LOOCV).
+
+Here, we do not create a training and test dataset. The cross-validation routine creates multiple sets for us, in a more organized and easy way.
+
+The LOOCV estimate and its measure can be automatically computed for any generalized linear model using the `glm()` function from the `stats` package, and the `cv.glm()` function from the `boot` package. If we use `glm()` to fit a model without passing in the family argument, then it performs linear regression, just like the `lm()` function.
+
+One parameter of `cv.glm()` is $K$, the number of groups into which to split the dataset for training and test purposes. This function splits the data into $K$ (approximately) equal-sized groups. See the documentation for the specific rule. It then repeats a process of leaving out one group for testing and training on the remainder of the data. 
+
+If $K$ is left off, or if it is set to `nrow(Auto)` it does LOOCV!
+
+So the `cv.glm()` function from the `boot` package automatically performs LOOCV when the parameter $K$ is left out; its default is the number of observations in the dataset, here 392. 
+
+`cv.glm()` has a second parameter called `cost`. When this parameter is the default, the mean square error is the measure used. If the `cost` parameter is supplied it must be a function of two arguments; the first is the predicted data and the second is the observed data.  We will not use this form here and merely accept the default for `cost`. We can take the square root of the estimate to get RMSE.
+
+The results of this cross-validation appear in the `delta` column of the output. The first number is the raw cross-validation estimate of the prediction error. The second column is an adjusted cross-validation estimate, compensating for the bias introduced by not using LOOCV cross-validation.  So for LOOCV they should be the same. 
+
+First we perform an LOOCV cross-validation on the simple linear model.
+## standard
+```{r}
+# library(boot)
+glm.fit1=glm(mpg~horsepower ,data=Auto)
+# dont specify K if you want LOOCV (all observations split)
+cv.err1 = cv.glm(Auto ,glm.fit1)
+sqrt(cv.err1$delta)
+```
+
+Notice the model is much more robust than it was when we selected a specific subset to train on and then test on the remainder of the dataset. That is because we pulled all possible training sets lacking one observation, and then tested on that one observation. We did all the tests at once!!
+
+Let's try our `poly(2)` model.
+
+```{r}
+glm.fit2=glm(mpg~poly(horsepower,2) ,data=Auto)
+cv.err2 = cv.glm(Auto ,glm.fit2)
+sqrt(cv.err2$delta)
+```
+
+The RMSE for the quadratic fit is only 4.39, even better than it was earlier. The extensive cross-validation has lowered the expected errors.
+
+# 5.3.3 k-Fold Cross-Validation
+
+The `cv.glm()` function can also be used to implement k-fold Cross-Validation. This is a method that is commonly employed by analysts.
+
+Below we
+use $k = 10,$ a common choice for $k$, on the Auto data set. We once again set
+a different random seed and initialize a vector in which we will store the CV errors
+corresponding to the polynomial fits of orders one to ten. This gives us a quick way to see all 10 possible polynomial fits.
+
+## standard
+```{r}
+set.seed (17)
+# create a holder object for the 10 poly choices
+cv.error10 = rep (0 ,10) # fill it with zeros
+for (i in 1:10) { # fit all 10 polynomial choices
+  glm.fit=glm(mpg~poly(horsepower ,i),data=Auto)
+  cv.error10[i] = cv.glm(Auto,glm.fit,K=10)$delta[1]
+}
+sqrt(cv.error10)
+best.degree = which(cv.error10==min(cv.error10))
+cat(sprintf("Best fit is degree = %d", best.degree))
+```
+
+## `tidymodels`
+```{r}
+# 1. Create a recipe where the polynomial degree is set to tune()
+poly_recipe <- recipe(mpg ~ horsepower, data = Auto) |>
+  step_poly(horsepower, degree = tune())
+
+# 2. Bundle the model and recipe into a workflow
+poly_wf <- workflow() |>
+  add_model(lm_spec) |>
+  add_recipe(poly_recipe)
+
+# 3. Create a grid of the values we want to test (1 through 10)
+degree_grid <- tibble(degree = 1:10)
+
+# 4. Run the 10-fold CV for every degree in the grid!
+set.seed(17)
+tune_results <- tune_grid(
+  poly_wf,
+  resamples = folds_10,
+  grid = degree_grid
+)
+
+# 5. Automatically find the degree with the lowest RMSE
+tune_results |> select_best(metric = "rmse")
+
+# 6. View a ranked list of the best performing degrees
+tune_results |> show_best(metric = "rmse", n=10)
+
+```
+
+Notice that the best occurs at a 7-th degree polynomial; but that is overly complicated for modeling. So we select degree 2, as before. A graph of the measures bears this out: beyond 2, the curve is pretty flat.
+
+```{r}
+# standard
+ggplot(data.frame(degree=1:10, cverr=cv.error10)) +
+  geom_line(aes(degree, cverr)) +
+  geom_point(data=data.frame(b=best.degree, 
+                             y=cv.error10[best.degree]),
+             aes(b,y), color="red", size=3)
+# tidymodels
+# take second best as simplest model 
+choice = tune_results |> show_best(metric = "rmse", n=10) %>% slice(2)
+autoplot(tune_results, metric="rmse") +
+  annotate("point", choice$degree, choice$mean, size=3, color="red" )
+  
+```
+
+# 5.3.4 The Bootstrap
+The bootstrap is the strongest of the cross-validation approaches available. 
+
+One of the great advantages of the bootstrap approach is that it can be applied in almost all situations. No complicated mathematical calculations are required. Performing a bootstrap analysis in R entails only two steps.
+
+- First, we must create a function that computes the statistic of interest; for us it is RMSE.
+- Second, we use the `boot()` function, which is part of the `boot` library, to perform the bootstrap by repeatedly sampling observations from the dataset with replacement.
+
+By not dividing the dataset into equal pieces, the approach yields a better estimate of the variability of the model's predictions.
+
+## Boot coefficients
+First we repeat the best regression model's coefficients, run on the whole dataset. Then we run the bootstrap on the same model,reporting the bootstrap result. 
+
+### standard
+```{r}
+# run model and get coefs
+lm(mpg~poly(horsepower,2), data=Auto) %>% tidy()
+
+# define the boot function, which is the model we want.
+boot.fn=function (data,index) {
+  coefficients(lm(mpg~poly(horsepower,2), 
+                  data=data, subset=index))
+}
+# run the bootstrap, setting a seed first.
+set.seed(1)
+boot(Auto, boot.fn, 1000)
+
+# plot the bootstrap samples (not essential)
+boot(Auto, boot.fn, 1000) %>% plot()
+```
+
+The t's in the summary are the three coefficients.  They are computed by random sampling of regressions. 
+
+### tidymodels
+```{r}
+library(purrr)
+set.seed(1)
+# 1. Create 1000 bootstrap samples
+auto_boots <- bootstraps(Auto, times = 1000)
+
+# 2. Fit the model to each sample and extract coefficients
+boot_coefs <- auto_boots |>
+  mutate(
+    models = map(splits, function(split) {
+      lm(mpg ~ poly(horsepower, 2), data = analysis(split))
+    }),
+    coef_info = map(models, tidy)
+  )
+
+# 3. Calculate the mean estimate and standard error for each coefficient
+boot_coefs |>
+  unnest(coef_info) |>
+  group_by(term) |>
+  summarize(
+    boot_estimate = mean(estimate),
+    boot_std.error = sd(estimate)
+  )
+```
+
+We see that the bootstrap, through its sampling cross validation strategy, has a lower estimate of the standard errors of the coefficients. 
+
+Here's what the book says about estimating the standard errors of the coefficients.
+
+>Recall that the standard formulas given in Equation 3.8 on page 66 rely on certain assumptions.
+
+>For example, they depend on the unknown parameter $\sigma^2$, the noise variance. We then estimate $\sigma^2$ using the RSS. Now although the formula for the standard errors do not rely on the linear model being correct, the estimate for $\sigma^2$ does. We see in Figure 3.8 on page 91 that there is a non-linear relationship in the data, and so the residuals from a linear fit will be inflated, and so will [the estimate of] $\sigma^2$. Secondly, the standard formulas assume (somewhat unrealistically) that the $x_i$ are fixed, and all the variability comes from the variation in the errors $e_i$. 
+
+>The
+bootstrap approach does not rely on any of these assumptions, and so it is likely giving a more accurate estimate of the standard errors of $\beta_0$ and $\beta_1$ and $\beta_2$ than is the `summary()` function.
+
+## Boot RMSE 
+Let's now write a boot function that will produce the RMSE of the regression. 
+
+### standard
+```{r}
+boot.fn2=function (data,index) {
+  sqrt(mean(residuals(lm(mpg~poly(horsepower,2), 
+                         data=data, subset=index))^2))
+}
+set.seed(1)
+b=boot(Auto, boot.fn2, 1000)
+b
+b %>% plot()
+```
+
+### tidymodels
+```{r}
+# 1. lm_spec already defined
+
+# 2. Fit the model across all 1000 bootstrap samples to get metrics
+set.seed(1)
+boot_rmse_results <- fit_resamples(
+  lm_spec,
+  mpg ~ poly(horsepower, 2),
+  resamples = auto_boots
+)
+
+# 3. View the averaged RMSE and R-squared
+boot_rmse_results |> collect_metrics()
+
+# Plot the distribution of a specific coefficient (e.g., the intercept)
+boot_coefs |>
+  unnest(coef_info) |>
+  filter(term == "(Intercept)") |>
+  ggplot(aes(x = estimate)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  labs(title = "Bootstrap Distribution of the Intercept")
+```
+
+The bootstrap obtains a RMSE of 4.36/4.39 for the degree 2 polynomial regression.
+
+Hence a model with the bootstrap coefficients should yield the most robust (best) prediction results.
+
+# Conclusion
+We performed several types of cross validation on a linear model for the Auto dataset. Using RMSE as a criterion for model selection, the types performed generally better than simple regression with a quadratic driver (polynomial 2). 
+
+They produced lower RMSEs and more precise coefficient estimates.  
+
+Crossvalidation is designed to produce more robust estimates of coefficients and performance measures, and that's what they do.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 5 Section 5.3. 5.3 Lab: Cross-Validation and the Bootstrap
+:::
+
+# Appendix
+
+## 5.3.4 Bootstrap Illustration
+Here we perform the illustration of using the bootstrap to compute a statistic we are interested in, as documented in the first part of 5.3.4.  Above we applied the bootstrap to the Auto dataset and models, and that work follows the second part of the section.
+
+Illustrating the bootstrap method, we use the `Portfolio` dataset, which contains the returns of two assets, `X` and `Y`. The `Portfolio` dataset in analyzed in Section 5.2 of [the text](#r1).
+
+```{r}
+data(Portfolio)
+Portfolio
+Portfolio %>% skim
+```
+
+We want to estimate the optimal fraction $\alpha$ to invest in asset X, with $1-\alpha$ invested in asset Y, to minimize the risk of the combined portfolio. The bootstrap method lets us estimate the standard deviation of $\alpha$, the optimal fraction. Section 5.2 contains an illustration of the bootstrap approach.
+
+For the bootstrap method we must construct a function which computes our statistic of interest, $\alpha$, which can be obtained in closed form (by straightforward computation) using a formula, Equation (5.7) in the book.
+
+```{r}
+# library(boot)
+# alpha function (for portfolio analysis)
+alpha.fn = function (data, index) {
+  X = data$X[index]
+  Y = data$Y[index]
+  objective = (var(Y)-cov(X,Y)) / (var(X) + var(Y) -2*cov(X,Y))
+  return(objective)
+}
+#test the function by applying it to all 100 observations in the Portfolio dataset
+alpha.fn(Portfolio, 1:100)
+# This matches the book.
+
+# sample the dataset by randomly selecting 100 observations from the range of 1 to 100, WITH replacement... one observation may be sampled more than once, and some not at all.
+
+set.seed(1) # to insure you can reproduce this result
+alpha.fn(Portfolio, sample(100, 100, replace=TRUE))
+#Of course we don't get the same answer as the book, because of the randomness.
+```
+
+A bootstrap process simply repeats this step many times, recording the alphas obtained, and computing the standard deviation of all those alphas. But the `boot()` function does this for us, reporting the result. Since this is so easy we have it do the routine 1000 times.
+
+### standard
+```{r}
+B = boot(Portfolio, alpha.fn, R=1000)
+B
+B$t0
+B$t %>% sd
+B %>% plot
+```
+
+The estimate of $\alpha$ is .5758 (it's called 'original' in the output) and the standard error (SE) of the estimate is .0937. They're printed out above as `B$t0`, and `B$t %>% sd`.
+
+So we can say that we are 95% confident that the value of $\alpha$ is between the limits computed below.
+```{r}
+cat("(", B$t0 - 1.96*(B$t %>% sd), ",", B$t0 + 1.96*(B$t %>% sd), ")")
+```
+
+So while the mean is about 57% put in investment X, there's actually some chance that the return would be lower than the best and the real best choice is closer to 40% or to 75%, a considerable variation in the choosing.
+
+### tidymodels
+```{r}
+# library(tidymodels)
+library(purrr)
+# library(ISLR2)
+
+# Function to calculate alpha on a dataframe
+calc_alpha <- function(df) {
+  var_y <- var(df$Y)
+  var_x <- var(df$X)
+  cov_xy <- cov(df$X, df$Y)
+  
+  (var_y - cov_xy) / (var_x + var_y - 2 * cov_xy)
+}
+
+# Test on the full dataset (Matches the book's initial output)
+calc_alpha(Portfolio)
+```
+
+```{r}
+set.seed(1)
+# 1. Create the 1000 bootstrap resamples
+portfolio_boots <- bootstraps(Portfolio, times = 1000)
+# 2. Map the calc_alpha function across every bootstrap sample
+alpha_results <- portfolio_boots |>
+  mutate(
+    # extract the analysis() set from the split, then compute alpha
+    alpha_est = map_dbl(splits, function(split) {
+      boot_df <- analysis(split)
+      calc_alpha(boot_df)
+    })
+  )
+# View the first few results
+head(alpha_results)
+
+# Calculate the mean and standard error of alpha
+alpha_summary <- alpha_results |>
+  summarize(
+    original_alpha = calc_alpha(Portfolio),
+    mean_boot_alpha = mean(alpha_est),
+    std_error = sd(alpha_est)
+  )
+
+# Calculate the 95% confidence interval
+alpha_summary |>
+  mutate(
+    lower_bound = original_alpha - 1.96 * std_error,
+    upper_bound = original_alpha + 1.96 * std_error
+  ) |>
+  select(original_alpha, mean_boot_alpha, lower_bound, upper_bound)
+```
+
+## Crossvalidation for Classification
+We use the `Weekly` dataset and try the `cv.glm()` function on a classification problem. First we run with the standard cost parameter, the MSE and take square root to get RMSE.
+
+```{r}
+data(Weekly)
+?Weekly
+```
+
+### standard
+```{r}
+# library(boot)
+glm.fitw = glm(Direction~Lag1+Lag2, data=Weekly, family=binomial)
+cv.errw = cv.glm(Weekly, glm.fitw)
+# glimpse(cv.errw)
+sqrt(cv.errw$delta)
+```
+
+The default cost function does not do what we want. We must modify the `cost` parameter to build a function that computes the fraction of errors made by the prediction.
+
+First to see how it works, we write a cost function to try to reproduce  the result above.
+```{r}
+costf = function(a,e) mean((a-e)^2)
+cv.errwf = cv.glm(Weekly, glm.fitw, cost=costf)
+sqrt(cv.errwf$delta)
+```
+It matches exactly. So we know how the cost is computed.
+
+Now try predicting from the `glm` output object. The `glm.fitw` object is a standard logistic regression classification with no CV.
+```{r}
+prob = predict(glm.fitw, type="response")
+pred = case_when(
+  prob>0.5 ~ "Up",
+  .default = "Down"
+ ) %>% as.factor
+
+cm = data.frame(truth=Weekly$Direction, estimate=pred) %>%
+  conf_mat(truth, estimate ); cm
+cm %>% summary
+```
+None of the confusion matrix numbers matches the cv output. 
+
+Now we use a cost function that measures the errors, recording 1 when the actual 'a' is different from the prediction 'e' (changed to Up/Down).
+
+```{r}
+costf3 = function(a,e) mean(a != case_when(e>.5~1, .default=0) )
+                  
+cv.errwf3 = cv.glm(Weekly, glm.fitw, cost=costf3)
+cv.errwf3$delta
+```
+
+It comes out just about exactly the way Andrew's run did.
+
+Now for fun we try just 2 splits. This is 2-fold crossvalidation. Using K=2
+```{r}
+cv.errwff2 = cv.glm(Weekly, glm.fitw, cost=costf3, K=2)
+cv.errwff2$delta
+```
+
+It's a little different.
+
+### tidymodels
+```{r}
+set.seed(1)
+# 1. Define a logistic regression model specification
+log_spec <- logistic_reg() |> 
+  set_engine("glm")
+# 2. Create the 2-fold cross-validation resamples (K=2)
+folds_2 <- vfold_cv(Weekly, v = 2)
+
+# 3. Fit the logistic regression model across the 2 folds
+cv_class_results <- fit_resamples(
+  log_spec,
+  Direction ~ Lag1 + Lag2,
+  resamples = folds_2
+)
+
+# 4. Collect the metrics and calculate the Error Rate
+cv_class_results |> 
+  collect_metrics() |>
+  # Focus on the accuracy metric
+  filter(.metric == "accuracy") |>
+  # Misclassification error is 1 minus the accuracy
+  mutate(error_rate = 1 - mean) |>
+  select(.metric, mean, error_rate, n)
+```
+
+

@@ -1,0 +1,302 @@
+---
+title: Ch06 Predicting House Prices with Lasso
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-16 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We demonstrate lasso analytics to choose drivers for predicting median home value in the Boston dataset drivers.
+---
+
+# Introduction
+Here we use lasso regression to predict median house prices using the `Boston` dataset from the `ISLR2` package.
+
+Since there are many drivers in this dataset, it makes sense to try to reduce the number of drivers used for prediction. Having a rational analytic way to do this makes a lot of sense. Lasso could be useful in this manner.
+
+We use the technique in concert with crossvalidation.  That is also important for robustness of the models we build.
+
+# Packages
+We load our preferred packages. For ridge and lasso we need package `glmnet`.
+
+```{r}
+library(ISLR2) # package contains the data files
+library(glmnet) # for ridge and lasso
+library(boot) # for bootstrap
+library(mbadtools, quietly=TRUE) # MBAD standard packages
+```
+
+# Data
+
+We will use the `Boston` data from the `ISLR2` package for all these experiments with automatic regression testing. See [reference 1](#r1) and [reference 2](#r2) for more info on the dataset.
+
+```{r}
+data(Boston)
+Boston %>% skim
+```
+
+There are 506 suburbs in the dataset, and 14 variables. We are going to try to find a good Lasso model to predict `medv` for a future suburb observation, based on a selection of the other 13 drivers.
+
+Maybe we don't need all of them!
+
+We will use the `rmse` metric for comparison.
+
+We did not build the linear model by testing on test data. We can't remove any of the coefficients.
+
+# Modeling
+We're going to create a Lasso model to see if some features can be eliminated. We will use tidy methods, and later show the standard method for reference.
+
+# Validation
+For validation, we set up a training and test data set by random selection. 
+
+There are some risks in doing this. This data is for individual cities; sampling it takes only some of the cities. Is there any bias introduced by the random sampling, that would make the predictions based on its coefficients not apply to the other cities?  We can't say.
+
+For that reason a bootstrap would probably be better; the bootstrap takes lots of samples.  
+
+Or we could also use LOOCV, which tries all combinations taking one
+city out each time, and computes the confidence interval in the coefficients that way.
+
+We could rerun the lasso many times with different samples and average the coefficients.  But the averages would probably all be above zero. The idea of the lasso is to make some of the coefficients zero.  We could use some other regime, say take the median coefficient and eliminate any that were 'too small'. All examples of supervision of the modeling.
+
+Here we're going to be content with simply creating a random training sample, using tidy methods.
+
+# Validation Split
+A `tidymodels` split uses `initial_split()` and define the training and testing datasets. Train on half the data selected randomly, and test on the other half.
+
+```{r}
+set.seed(2026)
+# takes .5 of data for training
+split <- initial_split(Boston, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data); dim(test_data)
+# folds for parameter tuning
+Boston.folds <- vfold_cv(train_data, v = 10) # for tuning parameter
+```
+# Standard Linear Model
+Run a linear regression on all predictors and training data for comparison. We compute the RMSE on the test data as a performance measure, and a confidence interval on it using a bootstrap technique.
+
+```{r}
+lm.fit=lm(medv~., data=train_data)
+lm.fit %>% glance %>% gt_add_significance()
+lm.fit %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+# 1. Get your test set predictions into a dataframe (from your LM steps)
+test_preds <- augment(lm.fit, newdata = test_data)
+# 2. Create 1000 bootstrap samples of those test predictions
+set.seed(2026)
+boot_rmse <- bootstraps(test_preds, times = 1000) %>%
+  mutate(
+    # Calculate RMSE for each bootstrap sample
+    rmse_val = map_dbl(splits, ~ {
+      boot_data <- analysis(.x)
+      rmse_vec(truth = boot_data$medv, 
+               estimate = boot_data$.fitted)
+    })
+  )
+# set up a tibble for the rmse and confidence interval
+LM_RMSE=tibble(
+  test_preds %>% yardstick::rmse(truth=medv, estimate=.fitted),
+  quantile(boot_rmse$rmse_val, probs = c(0.025, 0.975))  %>%
+    t %>% as_tibble)
+LM_RMSE
+```
+# Recipes
+Lasso works best when data are standardized.
+```{r}
+# data parameter is only used to get all column names.
+recipe_boston_basic = recipe(medv ~ ., data = train_data)
+
+# normalize data
+recipe_boston_norm = recipe_boston_basic %>% 
+  step_normalize(all_numeric_predictors())
+```
+
+# Specifications
+'mixture' parameter is set to 1 for Lasso.
+```{r}
+lasso_tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("regression")
+```
+
+# Tuning Grid
+```{r}
+penalty_grid <- grid_regular(penalty(), levels = 50)
+```
+
+# Workflow
+```{r}
+lasso_tune_workflow <- workflow() %>%
+  add_recipe(recipe_boston_norm) %>%
+  add_model(lasso_tune_spec)
+```
+
+# Fit
+```{r}
+lasso_tuning_results <- tune_grid(
+  lasso_tune_workflow,
+  resamples = Boston.folds,
+  grid = penalty_grid # try different penalty values
+)
+```
+
+# Metric
+```{r}
+# 1. Get the best parameters from your grid
+lasso_best_params <- select_best(lasso_tuning_results, metric = "rmse")
+lasso_best_params
+# 2. Lock those parameters into your workflow
+final_lasso_workflow <- finalize_workflow(lasso_tune_workflow,
+                                            lasso_best_params)
+# 3. Fit on training data and evaluate on test data simultaneously
+final_lasso_test_results <- last_fit(final_lasso_workflow, split)
+# View how it performed on the test data
+Lasso_tidy_rmse <- collect_metrics(final_lasso_test_results) %>%
+  select(-.config, -.estimator) %>% filter(.metric=="rmse")
+
+# bootstrap for CI
+tidy_test_preds <- collect_predictions(final_lasso_test_results)
+set.seed(2026)
+boot_rmse_tidy <- bootstraps(tidy_test_preds, times = 1000) %>%
+  mutate(
+    rmse_val = map_dbl(splits, ~ {
+      boot_data <- analysis(.x)
+      # Use .pred because this is the tidy model!
+      yardstick::rmse(boot_data, truth = medv, estimate = .pred)$.estimate
+    })
+  )
+
+tidy_CI_vals <- quantile(boot_rmse_tidy$rmse_val, probs = c(0.025, 0.975)) %>% t %>% as.data.frame
+# display results on test data
+Lasso_tidy_rmse
+```
+# Production
+Create a production model for future evaluations of communities.
+The production model uses all the data in `Boston`. We will show coefficients and the final RMSE for the full model.
+
+__This is where the feature selection goes on.__
+```{r}
+production_model <- fit(final_lasso_workflow, data = Boston)
+# Extract all coefficients from the final fitted model
+final_coefs <- tidy(production_model)
+# View the raw data frame
+final_coefs
+```
+
+`age` and `indus` have coefficients  = 0, and so these would not appear in a final prediction model.
+
+# standard method
+
+## Data Prep and CV
+First set up the proper native inputs for lasso `glmnet()`, which must be matrices. 
+```{r}
+# 1. Create the predictor matrix and response vector for the TRAINING data
+x_train = model.matrix(medv ~ ., data = train_data)[, -1]  # The [, -1] removes the intercept column
+y_train = train_data$medv
+
+# 2. Create the predictor matrix and response vector for the TESTING data
+x_test = model.matrix(medv ~ ., data = test_data)[, -1]
+y_test = test_data$medv
+```
+
+## Lasso 
+Parameter 'lambda' is the weight given to the sum of the absolute values of the coefficients, which forces the coefficients to tend toward zero when possible.
+
+## CV for best lambda
+Now we want to use cross-validation to select lambda that is best. 
+We run on the training data. The default measure used is MSE, same result as RMSE.
+```{r}
+# CV for best lambda
+set.seed(1)
+cv.out = cv.glmnet(x_train, y_train, alpha = 1)
+bestlam = cv.out$lambda.min
+bestlam
+```
+
+## Metric
+Now we use `bestlam` to train the lasso and make predictions on test data. Then we compute mean square error RMSE.
+```{r}
+# Evaluate and Metric
+lasso.mod = glmnet(x_train, y_train, alpha = 1, lambda = bestlam)
+lasso.pred = predict(lasso.mod, 
+                     s = bestlam, 
+                     newx = x_test) %>%
+  as.numeric()
+
+# 1. Get your test set predictions into a dataframe (from your LM steps)
+test_preds <- tibble(
+  truth = y_test %>% as.numeric,
+  estimate = lasso.pred %>% as.numeric()
+)
+# 2. Create 1000 bootstrap samples of those test predictions
+set.seed(2026)
+boot_rmse <- bootstraps(test_preds, times = 1000) %>% 
+  mutate(
+    # Calculate RMSE for each bootstrap sample
+    rmse_val = map_dbl(splits, ~ {
+      boot_data <- analysis(.x)
+      yardstick::rmse(boot_data, truth = truth, 
+               estimate = estimate)$.estimate
+    })
+  )
+# # set up a tibble for the rmse and confidence interval
+Lasso.test.RMSE = tibble(
+  test_preds %>% yardstick::rmse(truth=truth, estimate=estimate),
+  quantile(boot_rmse$rmse_val, probs = c(0.025, 0.975))  %>%
+    t %>% as_tibble)
+  
+Lasso.test.RMSE
+```
+
+## Production
+Now run on whole data set with `bestlam`. We display the coefficients.
+```{r}
+out=glmnet (x,y, alpha =1, lambda = bestlam)
+lasso.coef = predict (out ,type ="coefficients", s=bestlam )
+lasso.coef
+```
+
+`age` gets left out. Some coefficients are very small even though the lasso did not leave them out.
+
+# Comparison
+Compare RMSE on the test data for `tidy` and standard lasso with that of original linear regression. We will compare on just the test to determine model quality.
+
+```{r}
+bind_cols(LM_RMSE = LM_RMSE$.estimate, # linear model
+          LM_CI = paste0("[",
+                      round(LM_RMSE$`2.5%`,digits=3),", ",
+                      round(LM_RMSE$`97.5%`,digits=3),"]"),
+          std_RMSE = Lasso.test.RMSE$.estimate, # standard method
+          std_CI = paste0("[",
+                      round(Lasso.test.RMSE$`2.5%`,digits=3),", ",
+                      round(Lasso.test.RMSE$`97.5%`,digits=3),"]"),
+          tidy_RMSE = Lasso_tidy_rmse$.estimate, # tidy model
+          tidy_CI = paste0("[",
+                      round(tidy_CI_vals$`2.5%`,digits=3),", ",
+                      round(tidy_CI_vals$`97.5%`,digits=3),"]")
+          ) %>% gt()
+```
+
+On the `Boston` test data the lasso has RMSE on test data similar to `lm`; and has identified predictors that could be eliminated. 
+
+# Conclusion
+
+We have tried Lasso regression on the `Boston` dataset of housing prices in Boston suburbs. We used crossvalidation to choose a model parameter for lasso. 
+
+Using RMSE on the test data from `Boston` as a measure, we compared lasso computed both tidy and standard ways to a linear regression.
+
+Lasso eliminated features, and compared well with linear regression.
+
+# References
+::: {#r1}
+1. Harrison, D. and Rubinfeld, D.L. (1978) Hedonic prices and the demand for clean air. J. Environ. Economics and Management 5, 81–102.
+
+::: {#r2}
+2. Belsley D.A., Kuh, E. and Welsch, R.E. (1980) Regression Diagnostics. Identifying Influential Data and Sources of Collinearity. New York: Wiley.
+
+

@@ -1,0 +1,276 @@
+---
+title: Ch06 PCA with `tidy` Methods
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-18 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We use principal components analysis (PCA) to reduce the dimension (number of drivers) we need to consider in a problem. PCA replaces the drivers with linear combinations of them; we may need only a few components to  achieve substantially all the value of the original drivers. We explore tidymodels methods for PCA.
+---
+
+# Introduction
+PCA is an important technique, and recently has become embedded in advanced methods of feature selection. Once PCA components have been selected, they can be used as surrogates for groups of original drivers, simplifying the model.
+
+`tidymodels` actually embeds PCA in its data preparation techniques.
+
+We'll see how this works here.
+
+# Packages
+We may need factoextra for viz.
+```{r}
+library(ISLR2) # package contains data files
+library(factoextra) # for clustering analysis and PCA plotting; 
+# library(FactoMineR) # for some analytics and graphics
+# library(boot) # for bootstrap
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+
+# Research Problem
+We want to show how PCA can assist in managing datasets with a large number of features, especially collinear ones.
+
+We pick an example dataset with a lot of drivers.
+
+# Data
+The data contains 5822 real customer records. Each record consists of 86 variables, containing sociodemographic data (variables 1-43) and product ownership (variables 44-86). The sociodemographic data is derived from zip codes. All customers living in areas with the same zip code have the same sociodemographic attributes. Variable 86 (Purchase) indicates whether the customer purchased a caravan insurance policy. Further information on the individual variables can be obtained at (http://www.liacs.nl/~putten/library/cc2000/data.html)
+```{r}
+data(Caravan)
+Caravan %>% skim
+```
+
+# Design
+A `tidymodels` validation split uses `rsample::initial_split()` and define the training and testing datasets. Train on 80% of the data selected randomly, and test on the remainder.
+
+```{r}
+set.seed(2026)
+# takes .8 of data for training
+split <- initial_split(Caravan, prop = .8) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data); dim(test_data)
+# folds for parameter tuning
+caravan_folds <- vfold_cv(train_data, v = 10) # for tuning parameter
+```
+
+# Recipes
+Using tidy methods we can do PCA directly in the data preparation stage. It's desirable to have predictors on a common scale for both methods, so we normalize them. 
+
+```{r}
+# normalize predictors
+caravan_basic_recipe <- recipe(Purchase ~ ., data = Caravan) %>% 
+  step_normalize(all_numeric_predictors())
+
+# substitute PCA features
+caravan_pca_recipe <- caravan_basic_recipe  %>% 
+  step_pca(all_numeric_predictors(), num_comp=10) 
+```
+
+# Prep and Bake
+This step is not needed as the workflow handles the data prep. However, if you want to see what a recipe like `caravan_pca_recipe` does to generate feature selection via PCA, you can `prep` it and `bake` it on some data, into a data frame for review.
+
+```{r}
+pca_prepped <- prep(caravan_pca_recipe)
+bake(pca_prepped, new_data= head(train_data))
+```
+# Scree plot
+A scree plot shows how much of the variation is explained by the components. `factoextra::fviz_screeplot` can be used.
+```{r}
+# Extract the variance data from the step_pca() step
+pca_obj <- pca_prepped$steps[[2]]$res
+# create screeplot for first 10 components
+fviz_screeplot(pca_obj, ncp=10, 
+               addlabels = TRUE, ylim = c(0, 100)) +
+  labs(title="Scree plot for `Caravan` PCA Components",
+       x = "Component number")
+```
+The 85 drivers have been distilled down to 10 principal components which `represent` them.  Perhaps this smaller model can do as well as using all 85 drivers. The first 10 components capture 42% of the variance.
+
+# Model Specs
+Logistic regression with `glm`; no tuning can be done. 
+
+Add a nearest neighbors approach, using`kknn` from the package named `kknn`. This method is tunable; we will tune the number of neighbors.
+```{r}
+logistic_spec <- logistic_reg(engine="glm")
+
+library(kknn)
+neighbor_spec <- nearest_neighbor(
+  neighbors = tune(),
+  weight_func = "optimal",
+  dist_power = 2 # euclidean Minkowski distance
+) |>
+  set_engine("kknn") |>
+  set_mode("classification") |>
+  translate()
+```
+
+# Workflow Set
+There will be four models; with simple or pca data, and logistic or knn model.
+```{r}
+caravan_workflow_set <-
+  workflow_set(
+    preproc = list(
+      simple = caravan_basic_recipe,
+      pca = caravan_pca_recipe
+    ),
+    models = list(
+      log = logistic_spec,
+      knn =neighbor_spec
+    ),
+    cross = TRUE
+  )
+caravan_workflow_set
+```
+
+# Tune
+This section tunes the knn model, using the folds; the logistic classification cannot be trained. We select 5 metrics for classification.
+```{r}
+set.seed(123)
+tictoc::tic()
+caravan_workflow_results <-
+  caravan_workflow_set |>
+  # The first argument is a function name from the {{tune}} package
+  # such as `tune_grid()`, `fit_resamples()`, etc.
+  workflow_map("tune_grid",
+    resamples = caravan_folds, 
+    grid = 10,
+    metrics = metric_set(accuracy, bal_accuracy, 
+                         brier_class, yardstick::mcc, 
+                         roc_auc), 
+    verbose = TRUE
+  )
+tictoc::toc()
+caravan_workflow_results
+```
+
+# Metrics
+```{r}
+collect_metrics(caravan_workflow_results)
+
+# Rank models by performance (e.g., accuracy)
+rank_results(caravan_workflow_results, 
+             rank_metric = "roc_auc", 
+             select_best = TRUE)
+```
+
+# Metrics Viz
+:::{#figure1}
+Figure 1: Graphs of the performance of the models across different metrics.
+```{r fig.cap = "Figure 1", warning=FALSE}
+wrap_plots(
+  list(autoplot(caravan_workflow_results, metric = "accuracy"),
+       autoplot(caravan_workflow_results, metric = "bal_accuracy"),
+       autoplot(caravan_workflow_results, metric = "brier_class"),
+       autoplot(caravan_workflow_results, metric = "mcc"),
+       autoplot(caravan_workflow_results, metric = "roc_auc")
+      ), ncol=2, guides='collect')
+```
+
+
+Reading the metrics:
+
+- `brier_class` of 0 would mean a perfect fit.
+- `bal_accuracy` of .5 means random guessing. 
+- `accuracy` is high, but that could be obtained by simply guessing No for `Purchase`. 
+- `roc_auc` is the area under the ROC curve and best is closer to 1. 
+- `mcc` is supposed to be good for very unbalanced data like `Caravan`; it's like a correlation coefficient, 0 for random, +1 for perfect prediction, and -1 for perfectly wrong prediction.
+
+`Caravan` dataset is very unbalanced in `Purchase`, with over 90% not purchasing.
+
+The `logistic_reg` models seem to do well; in particular, the `simple_log` version with all predictors excels.
+
+# Extract and Fit Best
+Fit the best model.
+```{r}
+# Extract a specific workflow (e.g., "simple_log")
+caravan_best_wf <- extract_workflow(caravan_workflow_results,
+                            id = "simple_log")
+
+# Extract the best hyperparameters for that specific workflow based on `roc_auc` metric
+caravan_best_params <- select_best(
+  extract_workflow_set_result(caravan_workflow_results,
+                              id = "simple_log"), metric = "roc_auc")
+```
+
+# Production
+Finalize the workflow with best hyperparameter values. The `simple_log` model did not tune parameters.
+
+Fit it on 100% of data;  evaluate on test data.
+```{r}
+# Fit on 100% of data and evaluate on test_data
+caravan_final_wf <- finalize_workflow(caravan_best_wf,
+                                      caravan_best_params)
+# timing, may not be relevant here.
+tictoc::tic()
+caravan_final_fit <- last_fit(
+  caravan_final_wf, split,
+  metrics=metric_set(accuracy, roc_auc, 
+                     brier_class, bal_accuracy,
+                     yardstick::mcc)
+  )
+tictoc::toc()
+
+# View test set metrics 
+M = collect_metrics(caravan_final_fit, type="wide")
+M
+```
+
+# Predictions on test data
+Compute predictions from `test_data` and show the first 10.
+```{r}
+# first 10
+collect_predictions(caravan_final_fit, summarize=TRUE) %>% 
+  arrange(.row) %>% slice(1:10)
+```
+
+For classification we usually produce a confusion matrix. We then show the final metrics.
+```{r}
+CM = collect_predictions(caravan_final_fit, summarize=TRUE) %>% 
+  arrange(.row) %>% 
+  select(.pred_class, Purchase, .pred_No, .pred_Yes) %>% 
+  conf_mat(truth=Purchase, estimate=.pred_class)
+CM; M %>% select(-.config)
+```
+
+Our best model achieved a 71% `roc_auc` metric. This is the absolute right call for this dataset. Because `accuracy` is severely skewed by the 94% majority class, `roc_auc` gives you a much more reliable apples-to-apples comparison to prove that the `simple_log` model is actually learning the underlying patterns better than the other models.
+
+# Discussion
+The final confusion matrix shows that the `simple_log` model predicted "No" very often and only 3 "Yes" (1095 True Negatives, 66 False Negatives, 3 False  Positives, and 1 True Positives).
+
+While the 71% `roc_auc` means the model is ranking the probabilities reasonably well, the fact is that the hard classification identified only 1 caravan policy purchaser. This is a limitation.
+
+A next step to create a practically useful model would be adjusting the probability threshold (e.g., predicting "Yes" if probability > 15% instead of 50%) or adding a balancing step like `step_smote()` or `step_downsample()` (from the `themis` package) to the recipe.
+
+# Conclusion
+In this paper a `tidy` workflow was used for classification on a large unbalanced dataset, `Caravan`.
+
+- Two data preparations (recipes) were used, one simply scaling predictors, and the other also transforming the 85 predictors to 10 PCA principal components.
+- Two models, logistic classification and k-nearest-neighbors, were tried. The nearest-neighbors routine was tuned for the best choice of k, the number of neighbors to consider.
+- `roc_auc` was used as the metric to determine best model.
+
+The best model was logistic classification using the original data normalized. 
+
+Because of the extremely unbalanced response, `Purchase`, `accuracy` was high but not better than chance (`bal_accuracy`). However, `roc_auc`, the criterion metric, was over 71%.
+
+Graphs of the performance of the models in [Figure 1](#figure1) demonstrated that `simple_log` model performed best.
+
+# References
+::: {#r1}
+[Michy (2016)](http://www.milanor.net/blog/performing-principal-components-regression-pcr-in-r/) Michy, Alice (2016) Performing Principal Components Regression (PCR) in R, July 21, 2016. *Milano R*, (http://www.milanor.net/blog/performing-principal-components-regression-pcr-in-r/), retrieved on 11/29/2021.
+
+::: {#r2}
+[ISLR (2013)] Chapter 10.2.1 in James, G., Witten, D., Hastie, T., and Tibshirani, R. (2013) An Introduction to Statistical Learning with applications in R, https://www.statlearning.com, Springer-Verlag, New York 
+
+::: {#r3}
+[Kassambara (2020)](https://rpkgs.datanovia.com/factoextra/index.html) Alboukadel Kassambara (2020) factoextra : Extract and Visualize the Results of Multivariate Data Analyses. (https://rpkgs.datanovia.com/factoextra/index.html) Retrieved 12/06/2024.
+
+:::{#r4}
+P. van der Putten and M. van Someren (eds) . CoIL Challenge 2000: The Insurance Company Case. Published by Sentient Machine Research, Amsterdam. Also a Leiden Institute of Advanced Computer Science Technical Report 2000-09. June 22, 2000. See http://www.liacs.nl/~putten/library/cc2000/
+
+:::{#r5}
+P. van der Putten and M. van Someren. A Bias-Variance Analysis of a Real World Learning Problem: The CoIL Challenge 2000. Machine Learning, October 2004, vol. 57, iss. 1-2, pp. 177-195, Kluwer Academic Publishers
+

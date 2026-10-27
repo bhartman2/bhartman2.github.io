@@ -1,0 +1,351 @@
+---
+title: Ch04 Lab tidy Classification
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-09 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We will work the Ch04 Lab on classification, from [the textbook](#r5). 
+---
+
+# Introduction
+We will work the Ch04 Lab on classification, from [the textbook](#r5).
+
+# Packages
+
+First we load the packages we will use.
+
+```{r}
+library(ISLR2) #package contains the data files
+library(FNN)
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Acquire the Data
+
+Our data is in the `ISLR2` package. It is called `Smarket`, and contains daily percentage returns for the S&P 500 stock index between 2001 and 2005.
+
+```{r}
+# The data is in the ISLR2 package
+data(Smarket)
+Smarket %>% skim
+```
+
+In the data we have today's percentage return, Today, and five lags. Each lag represents the rate of return for one to five days previous.  Since stack market data is a time series, it would be reasonable that recent values might depend on the older (lagged) values. However, because of this autocorrelation of values, the assumptions of ordinary Multiple Linear Regression are violated-- there is correlation with time of Today's percentage return. 
+
+We are also given the Volume of shares traded in billions, which might influence today's percentage return. And finally, we have a factor or dummy variable indicating the direction of movement of the return, called Direction. It has values of Up or Down.
+
+# Data Description
+The `skim` summary shows that the data goes from 2001 to 2005, and the percentage return went Down more often than it went Up.  There are no missing values to worry about.
+
+A pairs plot may show us some relations between the columns.
+
+```{r warning=F, message=F, out.width="150%", fig.align='center', fig.width=10, fig.height=7}
+ggpairs(Smarket, progress=F) #uses package GGAlly
+```
+
+Most of the pairs plots look like blobs. The highest correlation is with Year and Volume, which only says that Volume is increasing over the years, a well-known fact about the stock market. We can show that with a plot of Volume against time in days. Of course because of weekends and holidays, there is not trading every day. So the days are consecutive open days, not calendar days.  The graph shows the slight increasing trend.
+
+```{r}
+ggplot(Smarket %>% mutate(day=1:nrow(Smarket))) +
+  geom_point(aes(x=day,y=Volume))
+```
+# What's next?
+
+Our goal is to try to predict Direction using the other data. We can see how Direction is coded like this.
+
+```{r}
+Smarket %>% pull(Direction) %>% contrasts
+```
+
+Because Direction is a factor, here a binary variable, with Down coded as 0 and Up coded as 1, we need to use a classification technique.  The three we will present are 
+
+- Logistic Regression
+- Linear Discriminant Analysis, and 
+- K-Nearest Neighbors classification using the `FNN` package.
+
+# Validating a model
+We want to know how well each model will predict the direction of the S&P500 each day. As a business fact, we want to predict the future, not the past. So we need to assess how the different models work on more recent data using only past data.  This is a key decision that the analyst must make. 
+
+Sometimes we can do this by randomly sampling the data. However, since this is time-series data, that would make no sense. Here we will separate the data into a training dataset and a test dataset; the test data will be year 2005, and the training data will be all previous data.  We will then create our models using the training data. Finally we will predict the model results on the 2005 test data.  Estimates of error on the test data should be comparable for the three models.
+
+# Data Preparation
+Here is how to separate the data into training and test data.
+we use a proportion to exactly split at 2004/2005 boundary.
+
+```{r}
+set.seed(2026)
+split <- initial_time_split(Smarket, prop = .799)
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# if we need folds for parameter tuning
+folds      <- vfold_cv(train_data, v = 5)
+```
+
+Notice that all the data is in one of the two datasets.
+
+# Recipe
+We need the recipe for our classification problem.
+
+We found earlier that only 2 lags works well.
+
+```{r}
+smarket_recipe <- recipe(Direction ~ Lag1 + Lag2,
+                         data = train_data)
+
+rec_basic <- smarket_recipe
+
+rec_range <- smarket_recipe %>% 
+  step_range(all_numeric_predictors())
+```
+
+# Model Specification
+Four models are specified.
+
+- logistic regression using `glm`
+- LDA using `MASS`
+- QDA using `MASS`
+- KNN using `kknn`; different from basic example
+
+```{r}
+# logistic
+logreg_spec <- logistic_reg() |>
+  set_engine("glm") |>
+  translate()
+# LDA
+library(discrim)  
+lda_spec <- discrim_linear() |>
+  set_engine("MASS") |>
+  translate()
+# QDA
+qda_spec <- discrim_quad() |>
+  set_engine("MASS") |>
+  translate()
+# KNN
+library(kknn) 
+# Parsnip changes the default range for neighbors to c(1, 15) and dist_power to c(1/10, 2).
+knn_spec <- nearest_neighbor(
+  neighbors = tune(),
+  weight_func = tune(),
+  dist_power = tune()
+) |>
+  set_engine("kknn") |>
+  set_mode("classification") |>
+  translate()
+```
+
+# Workflow Set
+There are 2 preprocessing states, basic and ranged data; and four models.
+
+```{r}
+wf_set <- workflow_set(
+  preproc = list(rec_basic, rec_range),
+  models  = list(log = logreg_spec, 
+                 lda = lda_spec,
+                 qda = qda_spec,
+                 knn = knn_spec),
+  cross = TRUE # Cross-combines all recipes with all models
+)
+```
+
+# Fit All Workflows to Resamples
+```{r}
+set.seed(123)
+tictoc::tic()
+# Fit every workflow in the set across all CV folds
+wf_results <- wf_set %>% 
+  workflow_map("tune_grid", resamples = folds)
+tictoc::toc()
+wf_results
+```
+
+# Rank and Compare Model Performance
+
+```{r}
+collect_metrics(wf_results)
+
+# Rank models by performance (e.g., RMSE)
+rank_results(wf_results, rank_metric = "accuracy", 
+             select_best = TRUE) %>% 
+  filter(.metric=="accuracy")
+```
+# Plot performance comparisons visually
+<a name="fig1"></a>
+```{r}
+autoplot(wf_results, metric = "accuracy")
+```
+Accuracy results ranked top 8:
+```{r}
+rank_results(wf_results, rank_metric = "accuracy", 
+             select_best = TRUE) %>% 
+  filter(.metric=="accuracy") %>% slice(1:8)
+```
+
+None of the models did too well on accuracy; the best was only 52%. `recipe_1` and `recipe_2` gave the same answers in all cases.
+
+It's not a surprise that both recipes give the same results. The two driver variables are daily stock prices and are therefore about the same magnitude. Range scaling won't affect their relationship.
+
+It's also not a surprise that qda beats lda; there might be evidence that `Lag1` and `Lag2` would have significantly different variance patterns. A Bartlett test is one measure.
+
+```{r}
+bartlett.test(Lag1 ~ Direction, data = train_data)
+bartlett.test(Lag2 ~ Direction, data = train_data)
+```
+The p-values are large, suggesting different variances, so qda would be indicated.
+
+
+# Extract Best Fit
+```{r}
+# Extract a specific workflow (e.g., "recipe_1_knn")
+best_wf <- extract_workflow(wf_results, id = "recipe_1_knn")
+best_wf
+
+## S3 method for class 'model_spec'
+extract_parameter_set_dials(best_wf)
+extract_parameter_dials(best_wf, "neighbors")
+# Extract the best hyperparameters for that specific workflow
+best_params <- select_best(
+  extract_workflow_set_result(wf_results, id = "recipe_1_knn"), 
+  metric = "accuracy"
+)
+best_params
+```
+
+# Finalize
+```{r}
+# Finalize the workflow with best hyperparameter values
+final_wf <- finalize_workflow(best_wf, best_params)
+
+# Fit on 100% of data and evaluate on test_data
+tictoc::tic()
+final_fit <- last_fit(final_wf, split)
+tictoc::toc()
+
+# View test set metrics (accuracy)
+collect_metrics(final_fit) %>% filter(.metric=="accuracy")
+```
+ 
+# Predictions
+Make predictions for the test data. The accuracy is only 47% on all data.
+```{r}
+FT = collect_predictions(final_fit, summarize=TRUE) %>% 
+  arrange(.row) %>% 
+  select(Direction, .pred_class) %>% 
+  conf_mat(Direction, .pred_class)
+FT
+FT %>% summary %>% filter(.metric=="accuracy")
+```
+
+On the test data, the best model is wrong more than it is right!! 47%
+
+# Old Modeling
+
+We will choose the same formula with Direction as target and the 2 Lags and the Volume as drivers. We train the `kknn` model on the data in `train_data`. We set the parameters as they were in the best model above. A decent simplified source for the k-nearest-neighbors is [Reference 2](#r2)
+
+```{r}
+best_params
+fit.kknn <- kknn(Direction ~ Lag1+ Lag2, 
+                 train_data, test_data,
+                 k = best_params$neighbors,
+                 distance = best_params$dist_power,
+                 kernel = best_params$weight_func)
+# get prior
+prior = split %>% data.frame %>%
+  filter(Direction=="Up") %>%
+  count %>% pull(n) / nrow(split %>% data.frame)
+prior
+# get probabilities
+pred.kknn = case_when( fit.kknn$prob[,"Up"] > prior ~ "Up",
+                       .default = "Down")
+# confusion mtx
+KT = data.frame(Direction = test_data$Direction, 
+               .pred = factor(pred.kknn) ) %>% 
+  conf_mat(Direction, .pred)
+KT
+KT %>% summary %>% filter(.metric=="accuracy")
+```
+
+We get 46.4% accuracy.
+
+# Compare with Workflow
+```{r}
+tibble( 
+  Workflow_accuracy = FT %>% summary %>%
+    slice(1) %>% pull(.estimate),
+  Standard_accuracy = KT %>% summary %>%
+    slice(1) %>% pull(.estimate)
+)
+```
+# Try different k
+Just for fun we run `kknn` again choosing naively the parameters, iterating over k.
+```{r}
+best_params
+for (k in 1:6) {
+  fit.kknn3 <- kknn(Direction ~ Lag1+ Lag2, 
+                   train_data, test_data,
+                   k = k,
+                   distance = 2, # default, euclidean
+                   kernel = "rectangular" # std unweighted
+  )
+  # get prior
+  
+  # get probabilities
+  pred.kknn3 = case_when( fit.kknn3$prob[,"Up"] > prior ~ "Up",
+                         .default = "Down")
+  # confusion mtx
+  KT3 = data.frame(Direction = test_data$Direction, 
+                 .pred = factor(pred.kknn3) ) %>% 
+    conf_mat(Direction, .pred)
+  KT3
+  cat("\nk = ", k, " accuracy = ",
+  KT3 %>% summary %>%
+    filter(.metric=="accuracy") %>%
+    pull(.estimate),
+  "\n")
+}
+```
+
+3 neighbors comes up best.
+
+# Discussion and Conclusion
+
+We have tried four different classification methods on the `Smarket` data, using as drivers only the first two lags. 
+
+We used a workflow from `tidymodels` and `workflowsets` to perform the process. 
+
+KNN with 2 neighbors, a triangular distance kernel, and a Minkowski distance exponent of around 1.15 came out best.
+
+We then ran the `kknn` model with those parameters on its own, the old way, and obtained almost the same accuracy. This model considers the training and test data all at once, producing classification and probabilities on the test data in one step.
+
+We also tried iterating over the number of neighbors, choosing the other parameters naively as euclidean distance and a rectangular (standard unweighted) kernel. Here, 3 neighbors came out best in accuracy with 53%.
+
+# References
+::: {#r1}
+1. James, Gareth; Witten, Daniela; Hastie, Trevor; Tibshirani, Robert. (2013) An Introduction to Statistical Learning with Applications in R. *Springer Texts in Statistics* eds. Casella, Fienberg, and Olkin. New York, Springer, 2013. [1](http://www.statlearning.com/), retrieved October 20, 2021.
+:::
+
+::: {#r2}
+2. Sirohi, Kshitiz (2018) K-nearest Neighbors Algorithm with Examples in R (Simply Explained knn). *Towards Data Science*, September 30, 2018. [2](https://towardsdatascience.com/k-nearest-neighbors-algorithm-with-examples-in-r-simply-explained-knn-1f2c88da405c), retrieved November 12, 2021.
+:::
+
+::: {#r3}
+3. Yiu, Tony (2019) Understanding Random Forest: How the Algorithm Works and Why it Is So Effective. *Towards Data Science*, Jun 12, 2019.  [3](https://towardsdatascience.com/understanding-random-forest-58381e0602d2) retrieved November 3, 2021.
+:::
+
+::: {#r4}
+4. Latief, Zulaikha. (2020) A Comprehensive Guide To Random Forest In R. *Edeureka!* November 25, 2020. [4](https://www.edureka.co/blog/random-forest-classifier/#What%20is%20Random%20Forest), retrieved November 3, 2021.
+:::
+
+::: {#r5}
+5. ISLR (2013) Chapter 4: Classification Section 4.6, pages 154-167.
+:::
+

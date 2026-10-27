@@ -1,0 +1,465 @@
+---
+title: Ch04 tidy Classification Confusion
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-11 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+  theme: readable
+  highlight: tango
+abstract: |
+  We use `tidyverse` and `tidymodels` methods to study logistic regression and explain the relation with conditional probabilities. We also demonstrate confusion matrix computation and use, and various metrics for the quality of an analysis based on them.
+---
+
+# Introduction
+Here I want to show some of the connections between the probability and statistics you studied years ago and the analyses we learn about when studying classification algorithms.
+
+Logistic Regression is a commonly used classification technique.  Classification algorithms use some predictors, or drivers, in a data set to estimate a response or target which is a discrete variable, such as "Yes"/"No" or "Down"/"Up". In the data set we will have the observed values of this target variable. 
+
+For this essay we will use data from the `ISLR2` package, associated with [the book](#r1). The `Default` dataset is in that package. It contains observations of credit card default information, with a target `default` and three drivers, `student`, `balance`, and `income`. The problem is to try to predict `default`, using the drivers `student`, `balance` and `income`. Such a routine would aid in determining which cards are at risk of a default; perhaps we should not offer them more credit.
+
+# Packages
+We use the usual packages. Confusion matrices are available in `yardstick` in the `mbadtools` package. 
+
+```{r}
+library(ISLR2) #package contains the data files, but not this one
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Data
+
+```{r}
+data(Default)
+Default %>% skim
+```
+
+We can see from the `skim()` function that there are two discrete or factor variables, the target `default`, and the driver `student`. These are each coded "No"/"Yes", with "No" represented by 1. The other drivers, `balance` and `income` are numeric. Let's first do some simple data description to see relations between the columns.
+
+```{r}
+Default %>% skim %>% yank("factor") %>%
+  select(skim_variable, top_counts)
+```
+
+
+The number of `default`=Yes is very low compared to the rest, 9667 Nos and only 333 Yes. So the prior probability of default (a guess at the probability if we did not use any driver information) is not 50-50, by any means; here, it's very low. This situation is very common in analytics; think about conversions from clicks in web marketing. It causes issues in trying to see if a classification algorithm is doing a good job or not.
+
+There's a fix; you can set a probability  _threshold_ for the predictions.
+
+# Boxplots
+We will use some boxplots to get more of a feel for the data; how does `default` depend on `income` and `balance`? I will use `ggplot()` and `patchwork` for display.
+
+```{r}
+p1 = ggplot() +
+  geom_point(aes(balance,income, color=default), data=Default) +
+  scale_color_manual(values=c("lightblue","red")) +
+  labs(x="Balance",y="Income", title="Figure 4.1")
+# p1
+p2 = ggplot(Default)+
+  geom_boxplot(aes(default, balance), fill=c("lightblue","red"), color="black") +
+  labs(x="Default",y="Balance",title="")
+# p2
+p3 = ggplot(Default)+
+  geom_boxplot(aes(default, income), fill=c("lightblue","red"), color="black") +
+  labs(x="Default",y="Income",title="")
+# p3
+
+p1 | p2 | p3
+```
+
+Higher `balance` is associated with `default`. High `balance` is spread across `income` levels. Lower `income` is slightly more associated with `default`.
+
+# Pairs Plot
+An alternative is `ggpairs`:
+```{r message=FALSE}
+Default %>% ggpairs(progress=F)
+```
+
+
+# Logistic Regression
+
+We will try Logistic Regression, a common classification technique, and one that is relatively easy to understand. 
+
+# Design
+
+In classification we should set up a training dataset and a test dataset by partitioning the full dataset. 
+
+Then we can train the algorithm on one part and test it by making predictions on the other part. Since there are 10000 observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data.
+
+`tidymodels` provides the best way to do this.
+
+```{r}
+# takes first half of data
+split <- initial_time_split(Default, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(Default$default)
+contrasts(Default$student)
+
+D.train=train_data
+D.test=test_data
+```
+
+The contrasts show us that the 'positive' condition is No for `default` and `student.` 
+
+# Specify Logistic Regression Model
+Specify the model structure using `tidymodels`. This can be reused each time we run logistic regression.
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+# Training
+Now we can run or 'train' logistic regression on the `D.train` part of the dataset.  We will try using `balance` and `student` status to predict `default`.
+```{r logistic, echo=TRUE}
+glm.logit <- log_spec %>%
+  fit(default ~ balance + student, data = D.train)
+glm.logit
+```
+
+Look at the results in detail.
+```{r}
+glm.logit %>% extract_fit_engine() %>% summary
+glm.logit %>% glance %>% gt_add_significance() %>%
+  tab_header(title="glance Overall") %>% fmt_number()
+glm.logit %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="tidy Coefficients")
+```
+
+The `summary`, `glance`, and `tidy` show that both drivers are significant (green p-values). 
+
+# Predictions
+
+Next we make predictions for the `D.test` data using the model we developed, using the `predict()`  function in `tidymodels`, with the "response" type.
+
+These predictions are probabilities, and we turn them into "No"/"Yes" values by assuming that each is equally likely; the probability of 0.5 is the threshold.
+
+That's a problem here! They aren't equally likely. The 'prior probability' of default (from the original data) is actually quite small.
+
+```{r predict }
+# classes with threshold = 0.5
+preds.class.5 = predict(glm.logit, new_data = D.test)
+preds.class.5 %>% glimpse
+
+# prior probability in dataset
+prior.train = D.train %>% group_by(default) %>% 
+  summarize(n_default=n()) %>% 
+  mutate(fraction = n_default/sum(n_default))
+prior.train = prior.train$fraction[prior.train$default=="No"] 
+prior.train
+
+# probabilities                 
+probs <- predict(glm.logit, new_data = D.test,
+                 type = "prob")
+probs %>% glimpse
+preds.class.prior = case_when(
+  probs$.pred_Yes > prior.train ~ "Yes",
+  .default = "No")
+preds.class.prior %>% glimpse
+```
+
+# Results
+We compare the results by making a contingency table with "states of nature" (`truth`, from the dataset!) in one column and the predictions, `estimate`, in the other. 
+
+## Contingency Tables
+First for the default .5 threshold.
+:::{#x5}
+```{r}
+CM5 = data.frame(estimate = preds.class.5$.pred_class,
+          truth = D.test$default) %>% 
+  conf_mat(truth, estimate)
+CM5
+```
+
+Now for the `prior.train` threshold.
+:::{#xp}
+```{r}
+CMp = data.frame(estimate = preds.class.prior %>% factor,
+          truth = D.test$default) %>% 
+  conf_mat(truth, estimate)
+CMp
+```
+
+## Metrics
+For the standard threshold.
+
+:::{#xstandard}
+```{r}
+CM5 %>% summary
+```
+
+
+Metrics for the `prior.train` threshold.
+
+:::{#xprior}
+```{r}
+CMp %>% summary
+```
+
+Note that this is an analyst decision!! 
+
+But the balance between `default`="Yes" and `default`="No" is very different from 50-50. Our prior expectation is for `default`="No" to be much higher. 
+
+Choosing the threshold for the probability requires careful consideration of the facts of the situation. And it matters for the predictions.
+
+# Plots
+We often see plots of a confusion matrix. A _mosaic plot_ makes the rectangle areas proportional to the counts in each category. A _heatmap_ makes all blocks equal size but displays the counts in each cell. We make them with `patchwork`, in two columns.
+
+```{r fig.width=12}
+A= CMp %>% autoplot() + 
+  labs(title="Mosaic of D.test confusion matrix", 
+       x="Predicted default") +
+  aes(fill = CMp %>% tidy %>% pull(name)) +
+  scale_fill_discrete(name = "Cells", 
+                      type=c("green","red",
+                      "purple", "green"),
+                      labels=LETTERS[1:4])
+
+B= CMp %>% autoplot(type="heatmap") + 
+  labs(title="Heatmap of D.test confusion matrix",
+       x="Predicted default") +
+  aes(fill = CMp %>% tidy %>% pull(name), alpha=.5) +
+  scale_fill_discrete(name = "Cells",
+                      type=c("green","red",
+                      "purple", "green"))
+
+wrap_plots(list(A,B), ncol=2)
+```
+
+In the heat map, 
+
+- the green cells are correct predictions, 
+- the red cells are wrong predictions bad for the customer, 
+- the purple cells are wrong predictions, bad for us but not the customer.
+
+The red cells are called Type II error in statistics, and they are the bad ones; we predicted a default when it did not happen, harming the customer.
+
+The purple cells are called Type I errors,and simply mean we missed predicting a default; they are inconvenient for us, but don't affect the customer.
+
+# ROC Plots
+ROC (Receiver Operating Characteristic) analysis builds on the previous discussion about threshold selection by showing how the model performs across all possible probability cutoffs, rather than just the $0.5$ or prior probability thresholds.
+
+We can do this using `probs`, since ROC curves require probabilities.
+
+-The Visual: The closer the ROC curve hugs the top-left corner, the better the model is at distinguishing between defaulters and non-defaulters. The diagonal line represents random guessing (a coin flip).
+
+```{r}
+# Combine the true `default` status with the predicted probabilities.
+roc_data <- bind_cols(D.test %>% select(default),
+                      probs)
+# Calculate the ROC curve data and plot it
+roc_plot <- roc_data %>% 
+  roc_curve(truth = default, .pred_No) %>% 
+  autoplot() +
+  labs(title = "ROC Curve for Default Prediction",
+       subtitle = "Model performance across all probability thresholds")
+#make the plot with no frills
+roc_plot
+```
+Red about Sensitivity (`sens()`), the True Positive Rate, and Specificity (`spec()`), the False Positive Rate, in their documentation.
+
+```{r}
+if(interactive()) ?yardstick::sens
+if(interactive()) ?yardstick::spec
+```
+
+# Area Under Curve (AUC)
+
+You will need a single metric to compare different models (e.g., if you later run a Random Forest). The AUC is the standard for this.
+
+-The Metric: The AUC is a value between $0.5$ (worthless model) and $1.0$ (perfect prediction). You can frame this as: "If we randomly pick one person who defaulted and one who didn't, the AUC is the probability that our model gives a higher risk score to the actual defaulter."
+
+```{r}
+# Calculate the ROC AUC metric
+roc_auc_metric <- roc_data %>% 
+  roc_auc(truth = default, .pred_No)
+roc_auc_metric
+```
+# How does a ROC curve help?
+Comparing your logistic regression model to a random baseline is a fantastic way to visually cement the concept of AUC. 
+
+Mathematically, a model that predicts completely at random— whether it uses a 50/50 coin flip or a "weighted" coin flip based on the prior probability— will always fall along the diagonal reference line of an ROC plot. Its expected AUC is exactly $0.5$.
+
+To demonstrate this simulate a random guessing model and plot its ROC curve directly alongside the logistic regression ROC curve.
+
+Add a column of random probabilities to represent the random guessing model. `prior.train` is 0.965 (the probability of "No"); 1 - `prior.train` is 0.035 (the probability of "Yes")
+
+```{r}
+# Set a seed for reproducibility
+set.seed(123)
+# Add a column of random guesses weighted by the prior probability of "No". 
+roc_data <- roc_data %>%
+  mutate(
+    # Success = 1 = Predicting "Yes" (happens 3.5% of the time)
+    .pred_Yes_random = 
+      rbinom(n(),size = 1, prob = 1 - prior.train),
+    # yardstick needs the probability of "No", which is just the opposite
+    .pred_No_random = 1 - .pred_Yes_random
+  )
+roc_data %>% glimpse()
+```
+
+Plot the comparison.
+```{r}
+# Calculate ROC curves for both models and combine them
+roc_comparison_data <- bind_rows(
+  roc_data %>% 
+    roc_curve(truth = default, .pred_No) %>% 
+    mutate(Model = "Logistic Regression"),
+  
+  roc_data %>% 
+    roc_curve(truth = default, .pred_No_random) %>% 
+    mutate(Model = "Random Guess")
+)
+
+# Plot the comparison
+ggplot(roc_comparison_data, 
+       aes(x = 1 - specificity, 
+           y = sensitivity, 
+           color = Model)) +
+  geom_line(linewidth = 1) +
+  # The theoretical exact diagonal
+  geom_abline(lty = 2, color = "gray50") + 
+  labs(title = "ROC Curve: Logistic Regression vs. Random Guess",
+       # subtitle = "Comparing model performance against a random baseline",
+       x = "False Positive Rate (1 - Specificity)",
+       y = "True Positive Rate (Sensitivity)") +
+  theme_minimal()
+```
+The blue line is not really a straight line, but jiggles about it, very close to the straight line.
+
+Compare the AUCs.
+```{r}
+# Calculate AUC for the random model
+auc_random <- roc_data %>% 
+  roc_auc(truth = default, .pred_No_random)
+# display
+auc_random %>% gt() %>% 
+    tab_header(title="Random") %>%  
+    wrap_table() | # side by side
+roc_auc_metric %>% gt() %>% 
+    tab_header(title="Logistic Regression") %>%  
+    wrap_table()
+
+```
+
+
+# Business Meaning
+The business question about all this work is whether this model help us by predicting defaults. 
+
+And how might we compare it with other models for prediction? We'd use the AUC, probably.
+
+We won't go into this here; our focus is on how we might measure the performance of this model. 
+
+Here is where the metrics are important. What do the metrics mean? 
+
+# Punnett Squares; Conditional Probability
+First I want to remind you how we used such event tables in probability class. We show the table or confusion matrix, labels of the cells in the matrix, and a heatmap plot of the table.
+
+```{r}
+CM5$table
+data.frame(rowname=c("defaultNo","defaultYes"), predNo=c("A","C"), predYes=c("B","D")) %>% 
+  gt()
+B
+```
+
+Such a layout is called a Punnett square, and it is the easiest way to understand conditional probabilities.
+
+We have two events, $\cal{Q}$ (rows, `default`)  and $\cal{R}$ (columns, predicted default). 
+
+A conditional probability is calculated as 
+$$\Pr(\cal{Q} | \cal{R}) = \frac{\Pr(\cal{Q} \wedge \cal{R})}{\Pr(\cal{Q})\Pr(\cal{R})}.$$
+We read this as "The probability of $\cal{Q}$ given $\cal{R}$ (or conditional on $\cal{R}$ happening) is the probability of $\cal{Q}$ and $\cal{R}$ happening together divided by the product of the probability of $\cal{Q}$ and the probability of $\cal{R}$".
+
+Let's call event $\cal{Q}$ a 'positive observation' when `default`="No". And event $\cal{R}$ will be a 'positive prediction', prediction of `pred_default`= "No". Then the table shows events $\cal{Q}$ and $\neg \cal{Q}$ in the rows, and $\cal{R}$ and $\neg \cal{R}$ in the columns, with the cells being the counts of how many of each combination occurred.
+
+We then have conditional probabilities that can be calculated from the square. It's all simple math. We use ABCD notation as indicated above for the cells of our confusion matrix table.
+
+Recall that "No" is the _positive outcome_!
+
+
+# Confusion Metrics
+There are lots of metrics in the `CM5` results. Look at the help file for `conf_mat.summary` to see all the calculations. These metrics are all computed from the Punnett square conditional probabilities. The calculations are documented in help files for the metrics in `yardstick`.
+
+```{r fig.height=10}
+CM5 %>% summary %>% gt
+```
+
+- All the conditionals with `default` status conditioned on `pred` status; 
+
+|Conditional|Calculation| Numeric | R calculation |Metric |
+|------------------------|------------|------------|-------|----------|
+| $$\Pr(default="No"\ |\ preds="No")$$   | $$\frac{A}{A+B}$$ | $$\frac{4816}{4816+104}$$ | `r 4816/(4816+104)` | `ppv`, `precision` |
+| $$\Pr(default="Yes"\ |\ preds="No")$$  | $$\frac{B}{A+B}$$ | $$\frac{104}{4816+104}$$ | `r 104/(4816+104)` | 1 - `ppv` |
+| $$\Pr(default="No"\ |\ preds="Yes")$$  | $$\frac{C}{C+D}$$ |$$\frac{26}{26+54}$$ | `r 26/(26+54)` | 1 - `npv`|
+| $$\Pr(default="Yes"\ |\ preds="Yes")$$ | $$\frac{D}{C+D}$$ |$$\frac{54}{26+54}$$ | `r 54/(26+54)` |`npv` |
+
+- All the conditionals with `pred` status conditioned on `default` status; these come from columns:
+
+|Conditional|Calculation| Numeric | R calculation |Metric |
+|------------------------|------------|------------|-------|----------|
+| $$\Pr(preds="No"\ |\ default="No")$$  | $$\frac{A}{A+C}$$ | $$\frac{4816}{4816+26}$$ | `r 4816/(4816+26)` | `sens`,`recall`|
+| $$\Pr(preds="Yes"\ |\ default="No")$$ | $$\frac{C}{A+C}$$  | $$\frac{26}{4816+26}$$ | `r 26/(4816+26)` | 1 - `sens`|
+| $$\Pr(preds="No"\ |\ default="Yes")$$ | $$\frac{B}{B+D}$$ | $$\frac{104}{104+54}$$ | `r 104/(104+54)` | 1 - `spec`|
+| $$\Pr(preds="Yes"\ |\ default="Yes")$$| $$\frac{D}{B+D}$$ | $$\frac{54}{104+54}$$ | `r 54/(104+54)` | `spec` |
+
+* Other Metrics;
+
+|Conditional|Calculation| Numeric | R calculation |Metric |
+|------------------------|------------|------------|---------------------|------------|
+|$$\begin{align}\frac{(\Pr(pred="No") \wedge\  default="No")+ \\
+  \Pr(pred="Yes")\ \wedge\  default="Yes") )}{sum of all}\end{align}$$ | $$\frac{A+D}{A+B+C+D}$$ | $$\frac{4816+54}{4816+104+54+26}$$ | `r (4816+54)/(4816+104+54+26)` | `accuracy`|
+|$$\frac{\Pr(preds="No")}{sum of all}$$  |  $$\frac{A+C}{A+B+C+D}$$ | $$\frac{4816+104}{4816+104+26+54}$$ | `r (4816+104)/(4816+104+26+54)` |`detection_prevalence`|
+|$$\begin{align}\frac{\Pr(pred="No"\ |\ default="No") + \\ 
+\Pr(preds="Yes" | default="Yes")}{2}\end{align}$$ | $$\frac{1}{2}\bigg(\frac{A}{A+C} + \frac{D}{B+D}\bigg)$$ |    $$\frac{1}{2}(\frac{4816}{4816+26}+\frac{54}{104+54})$$ | `r (4816/(4816+26)+54/(104+54))/2` | `bal_accuracy`|
+|$$\Pr(default="No")$$ | $$\frac{A+C}{A+B+C+D}$$ | $$\frac{4816+26}{4816+104+26+54}$$ | `r (4816+26)/(4816+104+26+54)` | *No Information Rate*, *Prevalence*, `detection_prevalence`|
+
+* Metrics not directly computed in `yardstick`
+
+|Conditional | Calculation | Numeric | R calculation |Metric |
+|------------------------|------------|------------|---------------------|------------|
+|$$\frac{\Pr(pred="No")\ \wedge\  default="No")}{sum of all} $$ | $$\frac{A}{A+B+C+D}$$  | $$\frac{4816}{4816+104+26+54}$$ | `r 4816/(4816+104+26+54)` | *Detection Rate* |
+
+Obviously we can predict defaults well. But we sometimes predict default for folks that don't default!!!
+
+# Conclusion
+
+We examined a logistic regression and created a table of predictions versus actual values. That table was a traditional object from statistics. We learned to use the `conf_mat` function and summary to calculate many measures of accuracy from that table.  
+
+We saw exactly how these measures are calculated from conditional probability formulas, familiar (?!) from statistics.  
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, p127ff.
+
+::: {#r2}
+2. Max Kuhn (2019) Measuring Performance. [The Caret Package](https://topepo.github.io/caret/measuring-performance.html)
+:::
+
+::: {#r3}
+3. Jacob Murel (2025) Create a confusion matrix with R. IBM Developer Tutorial. (https://developer.ibm.com/tutorials/awb-confusion-matrix-r/)
+
+# Appendix: `caret` method
+The classic `confusionMatrix` routine often seen in articles comes from package `caret`, useful but not needed.
+
+`caret` is a widely used package for modeling and analysis. Some of its methods conflict with `tidy` models, so I'm de-emphasizing its use. But it had a method for computing metrics for confusion matrices that appears in many articles.  So I'm demonstrating it here. You can compare the results and the metrics with those computed using `tidy` methods above.
+
+You will need to install the `caret` package if you want to try this.
+```{r}
+library(caret)
+```
+
+Its `confusionMatrix` function uses a [table of results like `t`](#x1) we created above. The same table is also contained in the `cm` object as `cm$table`.
+
+We apply the function to the table.
+```{r}
+caret::confusionMatrix(CM5$table)
+```
+

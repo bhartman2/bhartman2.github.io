@@ -1,0 +1,183 @@
+---
+title: Ch04 Lab KNN Analysis
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-09 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+  theme: united
+  highlight: tango
+abstract: |
+  We run a knn analysis for classification model with tidy methods following [ISLR](#r1) Chapter 4 Section 4.6.5.
+---
+
+# Introduction
+We follow [the textbook](#r1) Chapter 4: Classification, the same as chapter 4.6.5 lab in ISLR text on page 163-164.
+
+Why do we need another method of classification?  Before we performed a two-step approach in which we first fit the model and then we use the model to make predictions.
+
+The K-nearest-neighbors (KNN) model, `FNN::knn()` forms predictions using a single command. the version in the `FNN` package works in a tidy manner with data frames.
+
+This is less supervised than using logistic regression; we only have the number of
+nearest neighbors to consider as a parameter.
+
+The function requires three inputs. Others have defaults.
+
+| Input | Description | Default |
+|:-----:|:------------|:--------|
+| train | matrix or data frame of training set cases. | |
+| test  | matrix or data frame of test set cases. A vector will be interpreted as a row vector for a single case. ||
+| cl    | factor of true classifications of training set. | |
+| k     | number of neighbours considered | default=1 |
+| prob  | if this is true, the proportion of the votes for the winning class are returned as attribute prob | default=FALSE |
+| algorithm | nearest neighbor search algorithm | c("kd_tree", "cover_tree", "brute") |
+
+A decent simplified source of documentation is [Reference 2](#r2).
+
+# Research Question
+Again we want to predict Down or Up for the S&P 500 based on the data in `Smarket`.
+
+# Packages
+We load the required packages. To do KNN Analysis we need the `class` package.
+```{r}
+library(ISLR2) # package with data files
+library(FNN) # for knn modeling
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+
+# Data
+The data is in the `ISLR2` package.
+```{r dat}
+data(Smarket)
+Smarket %>% skim()
+```
+
+Train on the data through 2004, and test it on the last part of the data in 2005 and beyond.
+
+# Train and Test data
+We need a training data set and a test set because we are trying to predict the future from the past. We will train on the train set, any year before 2005; and validate or test using the test dataset. 
+
+For KNN we need to separate the drivers from the target. Again we use only 2 lags.
+
+```{r}
+#drivers
+train.X = Smarket %>% filter (Year<2005) %>% select(Lag1, Lag2)
+test.X  = Smarket %>% filter (Year>=2005) %>% select(Lag1, Lag2)
+```
+
+```{r}
+# target
+train.Y = Smarket %>% filter (Year<2005) %>% pull(Direction)
+test.Y =  Smarket %>% filter (Year>=2005) %>% pull(Direction)
+```
+
+We use `pull()`for the target because we want a vector of the directions.
+
+# Readying KNN
+
+This routine uses some randomization; therefore if you run it twice it won't come out the same.
+To make it be reproducible for this paper, you have to set the seed to a specific integer.
+As long as the seed is set to the same thing it will get the same results.
+If you let R decide on the seed you might get a different result every time you run.
+
+In practice, you might actually not set the seed, but run it 20 times and 'average' the results.
+
+We set seed so it is reproducible, and the reader can match the results.
+
+```{r}
+set.seed(1)
+```
+
+# Running KNN
+
+Start by having the algorithm investigate only one nearest neighbor. Set the parameter $k=1$. Train on the training data. The output is the classification of the cases. 
+```{r}
+knn.pred = knn(train.X, test.X, train.Y, k=1 )
+```
+
+Make confusion matrix of predictions of the trained model on test vs actual test Directions. We will choose the default parameters. The output will be a vector of classifications.
+```{r}
+tk1 = data.frame(Direction=test.Y, .pred=knn.pred) %>%
+  conf_mat(Direction, .pred)
+tk1
+tk1 %>% summary %>% filter(.metric=="accuracy")
+```
+
+The KNN model with 1 nearest neighbor predicts 50% correctly.
+
+Using two nearest neighbors, set $k=2$. Train on the training data.
+```{r}
+knn.pred2 = FNN::knn(train.X, test.X, train.Y, k=2 )
+tk2 = data.frame(Direction=test.Y, .pred=knn.pred2) %>%
+  conf_mat(Direction, .pred)
+tk2
+tk2 %>% summary %>% filter(.metric=="accuracy")
+```
+
+With two nearest neighbors we get 48%.
+
+Using three nearest neighbors, set $k=3$. 
+```{r}
+knn.pred3 = knn(train.X, test.X, train.Y, k=3 )
+tk3 = data.frame(Direction=test.Y, .pred=knn.pred3) %>%
+  conf_mat(Direction, .pred)
+tk3
+tk3 %>% summary %>% filter(.metric=="accuracy")
+```
+
+With three nearest neighbors we get 53.2% correct.
+
+Using four nearest neighbors, set $k=4$. Train on the training data.
+```{r}
+knn.pred4 = knn(train.X, test.X, train.Y, k=4 )
+tk4 = data.frame(Direction=test.Y, .pred=knn.pred4) %>%
+  conf_mat(Direction, .pred)
+tk4
+tk4 %>% summary %>% filter(.metric=="accuracy")
+```
+
+With four nearest neighbors we get 51.6% correct.
+
+# Visualization
+We take this discussion from [Reference 3](#r3). WE use the result of k=3, because it had the highest accuracy. First we simply make the two dot plots, showing that it is hard to separate two clusters. We use the system-defined colors to show the two classes. We set the colors to be the two values in test.Y.
+```{r}
+z = case_when(knn.pred3==test.Y ~ "right",
+              .default = "wrong")
+wrap_plots(nrow=1, guides='collect',
+  ggplot(test.X) +
+    geom_point(aes(Lag1, Lag2, color=test.Y)) +
+    labs(title = "Cluster Plots",
+         subtitle = "Observed classes")+
+    theme_bw()
+  ,
+  ggplot(test.X) +
+    geom_point(aes(Lag1, Lag2, color=z)) +
+    scale_color_manual(name="Match", values=c("black","red")) +
+    labs(subtitle="Predicted classes")+
+    theme_bw()
+)
+```
+
+# Conclusion
+We used `FNN::knn` to model the classification of the test dataset after building a model with the training dataset.
+
+We found that using 3 nearest neighbors got the greatest accuracy, 53.6%. This is not as good as the best QDA model.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, Section 4.6.5, page 163ff.
+
+::: {#r2}
+3. Shengqiao Li (2023) [Package FNN in R](https://cran.r-project.org/web/packages/FNN/FNN.pdf) 
+
+::: {#r3}
+3. [Clustering Visualization with ggplot](https://www.datanovia.com/en/blog/k-means-clustering-visualization-in-r-step-by-step-guide/) (https://www.datanovia.com/en/blog/k-means-clustering-visualization-in-r-step-by-step-guide/)
+
+:::{#r4}
+2. [knn in R](https://towardsdatascience.com/k-nearest-neighbors-algorithm-with-examples-in-r-simply-explained-knn-1f2c88da405c) (https://towardsdatascience.com/k-nearest-neighbors-algorithm-with-examples-in-r-simply-explained-knn-1f2c88da405c)
+
+:::

@@ -1,0 +1,305 @@
+---
+title: Ch04 Lab LDA Analysis
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-09 Revised `r lubridate::now() %>% format_ISO8601()`
+link-citations: true
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+  theme: readable
+  highlight: tango
+abstract: |
+  We run a linear discriminant analysis for classification model with tidy methods following [ISLR](#r1) Chapter 4 Section 4.6.3 and 4.6.4.
+---
+
+# Introduction
+We follow [the ISLR text](#r1) Chapter 4: Classification, the same as chapter 4.6.3 and 4.6.4 lab on page 161ff.
+
+# Research Question
+Why do we need another method of classification? We take this statement from [the text](#r1). 
+
+>We now consider an alternative and less direct
+approach to estimating these probabilities. In this alternative approach,
+we model the distribution of the predictors X separately in each of the
+response classes (i.e. given Y ), and then use Bayes’ theorem to flip these
+around into estimates for $Pr(Y = k|X = x)$. When these distributions are
+assumed to be normal, it turns out that the model is very similar in form
+to logistic regression. Why another method?
+
+> When the classes are well-separated, the parameter estimates for the
+logistic regression model are surprisingly unstable. Linear discriminant
+analysis does not suffer from this problem.
+
+> If n is small and the distribution of the predictors X is approximately
+normal in each of the classes (how do we check this? QQ plot!), the linear discriminant model is again more stable than the logistic regression model.
+
+> As mentioned in Section 4.3.5, linear discriminant analysis can be used, and is popular
+when we have more than two response classes.
+
+# Packages
+
+We load the required packages. To do Linear Discriminant Analysis we need the `MASS` package. Be sure to install it. 
+We load the required packages.
+```{r}
+library(ISLR2) #package with data files
+library(MASS) # for LDA modeling, load first so tidyverse overwrites
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+
+# Data
+
+The data is in the `ISLR2` package.
+```{r dat}
+data(Smarket)
+Smarket %>% skim
+```
+
+# Linear Discriminant Analysis
+
+We use the `lda()` function in the `MASS` package. Again we use two lags only, as we found that that was good using logistic regression.
+
+We follow our validation practice. Again we need a training data set and a test set. The train set is any year before 2005.
+
+For `lda()` we create two parts, the drivers (X) and the target (Y) variable. We 
+
+```{r}
+Smarket.train = Smarket %>% filter (Year<2005) %>%
+  dplyr::select(Lag1, Lag2, Direction)
+Smarket.test = Smarket %>% filter (Year>=2005) %>%
+  dplyr::select(Lag1, Lag2, Direction)
+```
+
+Now we fit on the training data set.
+
+```{r}
+lda.fit = lda(Direction~Lag1+Lag2, data=Smarket.train)
+```
+
+# Plots
+
+This built in plot shows the distribution of the fitted values for the Down group and the Up group. It superimposes a normal curve to show that the distribution is approximately normal.
+
+```{r}
+plot(lda.fit, type="both")
+```
+
+The groups of fitted values don't look very different in mean, and they are approximately normally distributed. The down group peak is slightly below 0.
+
+# Predictions
+
+These predictions of the class of each observation are based on the prior probabilities of Down and Up in the training data. That number is not exactly 50-50 in the training data, as this code shows.
+```{r}
+# find no of rows Down and Up
+Smarket.train %>% 
+  group_by(Direction) %>%
+  summarise(no_rows = length(Direction) )
+# or use skim
+Smarket.train %>% skim %>%
+  filter(skim_variable == "Direction") %>% 
+  select(skim_variable, factor.top_counts)
+```
+The ratio is 491 Downs and 507 Ups or
+```{r}
+507/(507+491)
+```
+
+50.8%. 
+
+This prediction is different from that used in the [logistic model notebook](#r5) where we chose .5 for the prior probability to test for Down vs Up.
+
+Now the predictions on the test data. Since there is no `augment` function for `MASS::lda()` we use the `predict.lda` function, which automatically computes both probabilities and predicted classes.
+
+```{r}
+plda <- predict(object = lda.fit, newdata = Smarket.test)
+plda %>% glimpse
+```
+
+We then compute the accuracy metric by faking jut enough of an` augment()` result.
+```{r}
+TP = data.frame(Direction = Smarket.test$Direction, 
+                .pred = plda$class) %>% 
+  conf_mat(Direction, .pred)
+TP
+TP %>% summary %>% filter(.metric=="accuracy")
+```
+
+Only 55.9% right, but better than logistic regression.
+
+# Quadratic Discriminant Analysis
+
+This comes from [our text](#r5) section 4.6.4. QDA is another version of classification.
+
+LDA assumes that the observations within each class are drawn from a
+multivariate Gaussian distribution with a class-specific mean vector and a
+covariance matrix that is common to all the classes. Quadratic discriminant analysis (QDA) provides an alternative.
+
+Like LDA, the QDA classifier results from assuming that the observations from
+each class are drawn from a Gaussian distribution, and plugs estimates for
+the parameters into Bayes’ theorem in order to perform prediction. 
+
+**However, unlike LDA, QDA assumes that each class has its own covariance matrix.**
+
+We run the QDA regression model on the train data.
+```{r}
+qda.fit=qda(Direction~Lag1+Lag2, data=Smarket.train)
+qda.fit
+```
+
+Predictions:
+```{r}
+predq = predict(qda.fit, Smarket.test)
+TQ = data.frame(Direction = Smarket.test$Direction,
+                .pred = predq$class) %>% 
+  conf_mat(Direction, .pred)
+TQ
+TQ %>% summary%>% filter(.metric=="accuracy") 
+```
+
+This seems to be a little more accurate, around 60%
+
+# QDA vs LDA: Differences
+
+Why does it matter whether or not we assume that the $K$ classes share a
+common covariance matrix? In other words, why would one prefer LDA to
+QDA, or vice-versa? 
+
+The answer lies in the bias-variance trade-off. When
+there are $p$ predictors, then estimating a covariance matrix requires estimating $p(p+1)/2$ parameters. QDA estimates a separate covariance matrix
+for each of K classes, for a total of $Kp(p+1)/2$ parameters.
+
+For 50 predictors this is some multiple of 1,275, which is a lot of parameters. 
+
+By instead assuming
+that the $K$ classes share a common covariance matrix, the LDA model
+becomes linear in x, which means there are $K_p$ linear coefficients to estimate.
+
+Consequently, LDA is a much less flexible classifier than QDA, and
+so has substantially lower variance. This can potentially lead to improved
+prediction performance. But there is a trade-off: if LDA’s assumption that
+the $K$ classes share a common covariance matrix is badly off, then LDA
+can suffer from high bias. 
+
+Roughly speaking, LDA tends to be a better bet than QDA if there are
+relatively few training observations and so reducing variance is crucial.
+
+In contrast, QDA is recommended if the training set is very large, so that the
+variance of the classifier is not a major concern, or if the assumption of a
+common covariance matrix for the $K$ classes is clearly untenable.
+
+# Testing Equal Covariance
+
+Comparing the models, QDA did better under this experimental procedure, obtaining about 60% accuracy, compared to about 56% for LDA.
+
+Possibly this difference in outcome between the LDA and QDA models is because the Down and Up classes in the training data had different covariance matrices. How different is different? 
+
+In this case we can compute covariance matrices for Down and Up classes in `Smarket.train`. There are only two lags involved; the third, `Direction` is the classifier.
+
+
+```{r}
+Smarket.train %>% filter(Direction=="Down") %>%
+  dplyr::select(Lag1, Lag2) %>% cov()
+Smarket.train %>% filter(Direction=="Up") %>%
+  dplyr::select(Lag1, Lag2) %>% cov()
+```
+
+They are different, but pretty close all the same.
+
+How can we test whether the difference seen above is significant, before choosing the method, LDA or QDA? Here are some ideas, from [Reference 2](#r2).
+
+A simple boxplot will tell us about the variances between the Down and Up class. We use a for loop over the two variables to create two plots; then we place them side-by-side with `patchwork`.
+
+```{r warning=FALSE}
+plot <- list()
+box_variables <- c("Lag1", "Lag2")
+for(i in box_variables) {
+    plot[[i]] <- ggplot(Smarket.train, 
+                        aes(x = Direction, 
+                            y = .data[[i]], 
+                                   colour = Direction, 
+                                   fill = Direction)) + 
+    geom_boxplot(alpha = 0.2) + 
+    theme(legend.position = "none") + 
+    scale_color_manual(values = c("blue", "red")) +
+    scale_fill_manual(values = c("blue", "red"))
+}
+
+plot[[1]] | plot[[2]]
+```
+
+The boxplots look about the same. Unequal variances would have the red and blue colored boxes of very different length.
+
+Another graphical test is a simple `ggplot` with a fitted ellipse.
+
+```{r}
+ggplot(Smarket.train, aes(x = Lag1, y = Lag2, col = Direction)) + 
+    geom_point() + 
+    stat_ellipse() + 
+    scale_color_manual(values = c("blue", "red"))
+```
+Again we see little difference in the red dot pattern and the blue dot pattern, and in the ellipses.
+
+# Levene's Test
+
+A numerical test is [Levene's test from package `car`](#r3), already loaded with `mbadtools`.
+
+```{r}
+car::leveneTest(Lag1 ~ Direction, Smarket.train)
+car::leveneTest(Lag2 ~ Direction, Smarket.train)
+```
+
+Both p-values are well above .05, so we can accept the null hypothesis of equal variance across `Direction` classes.
+
+# Bartlett Test
+
+[This reference](#r4) says that a Bartlett test might be better if we know the drivers have approximately normal distributions. It comes from the `stats` package, which is already part of R.
+
+```{r}
+bartlett.test(Lag1 ~ Direction, data = Smarket.train)
+bartlett.test(Lag2 ~ Direction, data = Smarket.train)
+```
+
+We must accept the null hypothesis of normality.
+
+# QQ Plot
+
+A QQ plot is an easy visualization of whether the distribution of Lag1 and Lag2 values is roughly normal.
+
+```{r}
+p1=ggplot(Smarket.train, aes(sample=Lag1)) +
+  stat_qq() + stat_qq_line() + labs(title="Lag1")
+p2=ggplot(Smarket.train, aes(sample=Lag2)) +
+  stat_qq() + stat_qq_line() + labs(title="Lag2")
+p1 + p2
+```
+
+Both variables seem to be mostly normally distributed.
+
+# Conclusion
+
+We have used LDA and QDA to predict a classification of the stock market data in `Smarket`. We used a robust procedure of estimating the model on a training dataset covering 4 years, and then validating (testing) on a fifth year, just after the four training years.
+
+We found QDA seemed to do somewhat better on the test dataset. 
+
+We then investigated some methods of testing for unequal covariances, both graphical and numerical, to test the assumptions of LDA and QDA.  We found that the covariances were approximately equal, so probably LDA is all right, even though QDA gave a better result.
+
+QDA is also a bit harder to explain, so its interpretability is a bit less.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, the same as chapter 4.6.3 and 4.6.4, page 161ff.
+
+::: {#r2}
+2. [Assumption Checking for LDA](https://thatdatatho.com/assumption-checking-lda-vs-qda-r-tutorial-2/) (https://thatdatatho.com/assumption-checking-lda-vs-qda-r-tutorial-2/)
+
+::: {#r3}
+3. [Levene's Test](https://www.itl.nist.gov/div898/handbook/eda/section3/eda35a.htm#:~:text=Levene's%20test%20(%20Levene%201960)%20is,equal%20across%20groups%20or%20samples) (https://www.itl.nist.gov/div898/handbook/eda/section3/eda35a.htm#:~:text=Levene's%20test%20(%20Levene%201960)%20is,equal%20across%20groups%20or%20samples)
+
+::: {#r4}
+4. [Bartlett Test](https://www.itl.nist.gov/div898/handbook/eda/section3/eda357.htm) (https://www.itl.nist.gov/div898/handbook/eda/section3/eda357.htm)
+
+::: {#r5}
+5. [Logistic Regression](Ch04-Lab-Logistic-Regression-Notebook.nb.html) Hartman, B. (2024) Ch04 Lab Logistic Regression Notebook. Canvas Course MBAD640.  (Ch04-Lab-Logistic-Regression-Notebook.nb.html)
+

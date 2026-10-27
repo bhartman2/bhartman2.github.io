@@ -1,0 +1,273 @@
+---
+title: Ch04 Classification Metric mcc
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-11 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+  template: cosmo
+  highlight: tango
+abstract: |
+  We investigate the Mathews Correlation Coefficient (`mcc`) metric for an unbalanced classification problem. 
+---
+
+# Introduction
+
+Logistic Regression is a commonly used classification technique.  Classification algorithms use some predictors, or drivers, in a data set to estimate a response or target which is a discrete variable, such as "Yes"/"No" or "Down"/"Up". There are different methods.  Metrics are used to compare these methods.
+
+For this essay we will use data from the `ISLR2` package, associated with [the book](#r1). The `Default` dataset is in that package. It contains observations of credit card default information, with a target `default` and three drivers, `student`, `balance`, and `income`. The problem is to try to predict `default`, using the drivers `student`, `balance` and `income`. Such a routine would aid in determining which cards are at risk of a default; perhaps we should not offer them more credit.
+
+The dataset is _unbalanced_; one state of the target is much more common than the other. In this case, `default` is mostly "No", regardless of the driver values. So  it's harder to predict default for someone based on the drivers.  
+
+You could do well by simply predicting "No" all the time, and offering credit to everybody. That would be good for customers, but bad for the bank.
+
+# Research Question
+How do three metrics, `accuracy, mcc, bl_accuracy` compare in this very unbalanced dataset?
+
+Is there an argument for preferring one of them?
+
+# `mcc` Metric
+You can read about the mcc metric in [KoshurAI, 2024](#r2).
+```{r}
+if(interactive()) ?yardstick::mcc()
+```
+
+MCC Value Ranges:
+
+- +1: Perfect prediction, meaning the model is in complete agreement with the actual labels.
+- 0: The model is performing no better than random guessing.
+- -1: Total disagreement between the model’s predictions and the actual labels (worst possible prediction).
+
+The formula may seem complex at first, but it essentially balances both the correct and incorrect classifications for both classes, and presents it in a form like a corelation coefficient.
+
+Unlike `accuracy`, which can give inflated results for imbalanced data, `mcc` remains a reliable metric regardless of class distribution.
+
+# Packages
+We use the usual packages.
+
+```{r}
+library(ISLR2) #package contains the data files, but not this one
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+```
+
+# Data
+The `Default` dataset is part of `ISLR2`.
+```{r}
+data(Default)
+Default %>% glimpse
+Default %>% skim
+```
+
+The number of defaults is very low compared to the rest, 9667 Nos and only 333 Yes. So the prior probability of default (a guess at the probability if we did not use any driver information) is not 50-50, by any means; here, it's very low. 
+
+This situation is very common in analytics; think about conversions from clicks in web marketing. It causes issues in trying to see if a classification algorithm is doing a good job or not.
+
+```{r message=FALSE}
+Default %>% ggpairs(progress=F)
+```
+
+Higher balances are associated with defaults. High balances are spread across income levels. Lower income is slightly more associated with default.
+
+# Validation Datasets
+
+In classification we should set up a training dataset and a test dataset by partitioning the full dataset. Then we can train the algorithm on one part and test it by making predictions on the other part. Since there are 10000 observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+`tidymodels` provides the best way to do this.
+
+```{r}
+# takes first half of data
+split <- initial_time_split(Default, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(Default$default)
+contrasts(Default$student)
+
+D.train=train_data
+D.test=test_data
+```
+The contrasts show us that the 'positive' condition is No for `default` and `student`. It is assigned value 0 in the factor.
+
+# Logistic Regresssion
+
+We will try Logistic Regression, a common classification technique, and one that is relatively easy to understand.
+
+# Logistic Regression Model
+Specify the model structure using `tidymodels`. This can be reused each time we run logistic regression.
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+## Training
+Now we can run or 'train' logistic regression on the `D.train` part of the dataset.  We will try using `balance` and `student` status to predict `default`.
+
+```{r logistic, echo=TRUE}
+glm.logit <- log_spec %>%
+  fit(default ~ balance + student, data = D.train)
+
+glm.logit %>% extract_fit_engine() %>% summary
+glm.logit %>% glance %>% gt_add_significance() %>%
+  tab_header(title="glance Overall")
+glm.logit %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="tidy Coefficients")
+```
+
+The `summary`, `glance`, and `tidy` show that two drivers are significant (green p-values). 
+
+## Predictions {-}
+
+Next we make predictions for the `D.test` data using the model we developed, using the `predict()`  function in R, with the "response" type.
+
+These predictions are probabilities, and we turn them into "No"/"Yes" values by assuming that each is equally likely; the probability of 0.5 is the cutoff. That's a problem here! They aren't equally likely. 
+
+```{r prior}
+# prior probability in dataset
+prior.train = D.train %>% group_by(default) %>% 
+  summarize(n_default=n()) %>% 
+  mutate(fraction = n_default/sum(n_default))
+prior.train = prior.train$fraction[prior.train$default=="No"] 
+prior.train
+```
+
+The 'prior probability' of default (from the original data) is actually quite small, .035; so the priors are .9650 for No and .035 for Yes. 
+
+```{r}
+# probabilities                 
+probs <- predict(glm.logit, new_data = D.test,
+                 type = "prob")
+preds.class.prior = case_when(
+  probs$.pred_Yes > prior.train ~ "Yes",
+  .default = "No") %>% factor
+preds.class.prior %>% table
+```
+
+## Results
+
+We compare the results by making a table with the "states of nature" (truth, from the dataset!) in the columns and the predictions in the rows. The columns are the values of default in the test dataset; the rows are the values of `preds`, the predictions, made by the model. Each cell of the table tells us how many observations fell into each category.
+
+```{r}
+t = data.frame(truth=D.test$default, 
+               estimate = preds.class.prior)
+```
+We use `conf_mat()` to produce a *confusion matrix*, and a summary to present the different metrics for classification.
+
+```{r}
+cmlog = t %>% conf_mat(truth, estimate)
+cmlog
+cmlog %>% summary
+```
+
+We have correctly predicted "No" 4842 times, and we correctly predicted "Yes" 3 times.  We predicted default="Yes" 0 times when in reality there was no default. And we predicted "No" 155 times when there was actually a default; these are the type II errors that are harmful.
+
+## Metrics
+The business question here is whether this model can help the bank by predicting defaults. And how might we compare it with other models for prediction?  What metrics should we use? 
+
+We will look at a familiar metric, accuracy, a fairly familiar one, balanced accuracy, and one you've not heard of, the Mathews correlation coefficient. More info on it and why it might be better can be found in [Reference 2](#r2)
+
+Here are the results for these metrics from the logistic regression above.
+
+```{r}
+reslog = cmlog %>% summary %>% 
+  filter(.metric %in% c("accuracy", "bal_accuracy", "mcc")) %>% 
+  mutate(.model="Logistic reg", .before=1)
+reslog
+```
+
+`accuracy` says we did really well.  Even `bal_accuracy` is not too bad. They are percents.
+
+But the Mathews correlation coefficient only gives us .13.
+
+It is evaluated on a scale of -1 to 1, where -1 is completely wrong predictions, 1 is completely correct predictions, and 0 denotes no better than chance. Its score here of .13 means we are only just better than completely random predictions (based on the prior proportions).
+
+# LDA Model
+
+Next we use `lda`, linear discriminant analysis, from the `MASS` package, to perform the classification. 
+
+```{r}
+library(discrim)
+lda_spec <- discrim_linear() |>
+  set_engine("MASS") |>
+  translate()
+```
+
+We will not use the option for crossvalidation within the `D.train` dataset because we will evaluate the model on the `D.test` data. The default for the 'prior' parameter is the proportion in the dataset.
+
+## Training
+
+```{r lda, echo=TRUE}
+glm.lda <- lda_spec %>%
+  fit(default ~ balance + student, data = D.train)
+
+glm.lda %>% extract_fit_engine() %>% summary
+# no glance or tidy for lda models
+```
+
+## Predictions
+```{r}
+preds.lda = predict(glm.lda, D.test)
+preds.lda %>% glimpse
+```
+
+## Results
+```{r}
+tlda = data.frame(truth=D.test$default,
+                  estimate =preds.lda$.pred_class)
+cmlda = tlda %>% conf_mat(truth, estimate)
+cmlda
+```
+
+## Metrics
+```{r}
+reslda = cmlda %>% summary %>% 
+  filter(.metric %in% c("accuracy", "bal_accuracy", "mcc")) %>% 
+  mutate(.model="LDA", .before=1)
+reslda
+```
+
+`accuracy` is .97, and `bal_accuracy` .63, good scores. The `mcc` is much better however, at .45, which is halfway between random (based on priors) and perfect!  For this reason we should choose LDA.
+
+A prettier comparison is here:
+
+```{r}
+bind_rows(reslog, reslda) %>% as.data.frame %>% 
+  pivot_wider(id_cols=.model, names_from=.metric, values_from=.estimate)
+```
+
+# Discussion
+
+We examined a logistic regression and an LDA regression.  Based on `accuracy`, the two models were about the same. with `bal_accuracy` a slight advantage went to LDA.  
+
+But using `mcc`, the LDA model was significantly better. 
+
+The LDA model was wrong in the upper right cell only 115 times, predicting No for people who should have been predicted Yes; compared to 155 for the logistic model. These are type II errors, misses that hurt the customer.
+
+It was wrong in the lower left cell 13 times compared to 0 for the logistic model; these are type I misses that hurt only the bank.
+
+So the business tradeoff for choosing a model is clear. The logistic model gives more credit latitude; but the LDA model reduces potential losses for the bank.
+
+We might not be satisfied with either model; others could be tried and evaluated with these metrics.
+
+# Conclusion
+We compared a logistic regression and an LDA model for `default` prediction, and found LDA better.
+
+We used `tidymodels` to build the specs and run the models, and created `conf_mat()` confusion matrices and metrics.
+
+In this case, with a very skewed distribution of `defaults`, the `mcc` metric may be a good choice, rather than `bal_accuracy` or `accuracy`.
+
+# References
+::: {#r1}
+1. ISLR (2013) Chapter 4: Classification, p127ff.
+
+::: {#r2}
+2. KoshurAI, 2024. Understanding the Matthews Correlation Coefficient (MCC) in Machine Learning. Sep 7, 2024. Accessed 9/11/2026 at (https://koshurai.medium.com/understanding-the-matthews-correlation-coefficient-mcc-in-machine-learning-26e8049f8572)
+
+::: {#r3}
+3. Jacob Murel (2025) Create a confusion matrix with R. IBM Developer Tutorial. (https://developer.ibm.com/tutorials/awb-confusion-matrix-r/)

@@ -1,0 +1,322 @@
+---
+title: Ch04 Confusion and Lift
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-12 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: true
+    toc_float: true
+  template: cosmo
+  highlight: tango
+abstract: |
+  We explain the lift metric as used in classification. Classification is treated the textbook Chapter 4, but lift is not mentioned in the text.
+---
+
+# Introduction {-}
+We present the concept of [Lift](#r1) prevalent in marketing, and its relation to the Confusion Matrix. First you should be familiar with the analysis in [tidy Classification and Confusion](#r3).
+
+# Packages {-}
+Loading the standard packages for this course:
+```{r echo=FALSE, message=FALSE}
+library(ISLR2) #package contains the data files, but not this one
+library(pROC) # obtain function ggroc()
+library(mbadtools, quietly=TRUE) # tools for mbad courses
+source("detection_rate.R") # compute detection_rate
+```
+
+# Data {-}
+```{r}
+data(Default)
+Default %>% skim
+```
+# Logistic Regresssion {-}
+
+Use the Logistic Regression model, with a training dataset and a test dataset. We train the algorithm on one part and test it by making predictions on the other part. Since there are `r nrow(Default)` observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+# Validation Datasets
+
+In classification we should set up a training dataset and a test dataset by partitioning the full dataset. Then we can train the algorithm on one part and test it by making predictions on the other part. Since there are 10000 observations in Default, we will train on the first half and test on the second half. This makes some sense because these are weekly data, and we prefer to train on early data and predict later data. 
+
+`tidymodels` provides the best way to do this.
+
+```{r}
+# takes first half of data
+split <- initial_time_split(Default, prop = .5) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(Default$default)
+contrasts(Default$student)
+
+D.train=train_data
+D.test=test_data
+```
+
+# Model
+Specify the model structure using `tidymodels`. This can be reused each time we run logistic regression.
+```{r}
+log_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+```
+
+# Train
+Now we can 'train' logistic regression on the train part of the dataset. Use the special function to display and color the significant variables in a `gt` table.  
+
+```{r logistic, echo=TRUE}
+glm.logit <- log_spec %>%
+  fit(default ~ balance + student, data = D.train)
+
+glm.logit %>% extract_fit_engine() %>% summary
+glm.logit %>% glance %>% gt_add_significance() %>%
+  tab_header(title="glance Overall")
+glm.logit %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="tidy Coefficients")
+```
+
+The `tidy` shows that both drivers are significant. Next we make predictions for the test data using the model we developed, using the `augment()` function, with the "response" type. 
+
+# Predictions {-}
+
+Next we make predictions for the `D.test` data using the model we developed, using the `predict()`  function in R, with the "response" type.
+
+These predictions are probabilities, and we turn them into "No"/"Yes" values by assuming that the prior probability in `D.train` is the threshold. They aren't equally likely. But for simplicity we'll assume they are, and use a threshold of .5.
+
+```{r}
+# probabilities needed for later                
+probs <- predict(glm.logit, new_data = D.test,
+                 type = "prob")
+
+preds.class.5 = case_when(
+  probs$.pred_Yes >.5 ~ "Yes",
+  .default = "No") %>% factor
+preds.class.5 %>% table
+```
+
+## Confusion matrix
+First we make a dataframe that has all we need for classification analysis, containing the true classes, the estimated or predicted classes, and the probabilities of the two classes.
+```{r}
+t = data.frame(truth=D.test$default, 
+               estimate = preds.class.5, probs)
+t %>% glimpse
+```
+
+We compare the results by making a confusion matrix with the "states of nature" (truth, from the dataset!) in the columns and the predictions in the rows. The columns are the values of default in the test dataset; the rows are the values of `preds`, the predictions, made by the model. Each cell of the table tells us how many observations fell into each category.
+
+```{r}
+cmlog = t %>% conf_mat(truth, estimate)
+cmlog
+```
+
+# Metrics
+```{r}
+cmlog %>% summary
+```
+
+# Lift Definition
+
+Lift is a term used in marketing to describe how much improvement in a response is achieved by say a marketing campaign.  It measures the improvement over the status quo. There's more about Lift in [Reference 2](#r2). Here we will show you how to get lift from the confusion matrix. It's all there. 
+
+Remember the layout of the confusion matrix; we designate each cell by a letter:
+
+| Layout ||||
+|:-------:|:-----: |:---------:|:------:|:-----|
+|         |        |  |Event $\cal{R}$        |      |
+|         |        |       | predicted |       |
+| Event   |        |       |    No     |  Yes  |
+|$\cal{Q}$|default |  No   |    A      |   B   |
+|         |        | Yes   |    C      |   D   |
+
+# Math of Lift
+
+The definition of Lift is the ratio of the actual probability of the upper left cell, $\Pr(\cal{Q} \& \cal{R})$, to what it would be if $\cal{Q}$ and $\cal{R}$ were independent events; that is, predictions and responses were uncorrelated. The probability of that cell if A and B are independent is $\Pr(\cal{Q})* \Pr(\cal{R})$. So we have the following.
+
+$$\textrm{Lift} =\frac{\Pr(pred=="No" \wedge\  default=="No")}{\Pr(pred=="No") \Pr(default=="No")}$$ 
+$$\textrm{Lift} = \frac{\frac{4816}{4816+104+26+54} }{ \bigg( \frac{4816+104}{4816+104+26+54}\frac{4816+26}{4816+104+26+54}\bigg) }$$
+**SINCE ALL DENOMINATORS ARE THE SAME**,
+
+$$\textrm{Lift} = \frac{4816 * (4816+104+26+54) }{ (4816+104) * (4816+26) } = \frac{A(A+B+C+D)}{(A+B)(A+C)}$$
+```{r}
+lift = (4816)*(4816+104+26+54) /( (4816+104) * (4816+26) )
+lift
+```
+
+This calculation tells us that the prediction algorithm has lift of 1.01. It is 1.01 times better than if the prediction and the default were statistically independent. In other words, not much.
+
+How much better (or worse) than random independence are we doing by predicting? Lift answers that question. 
+
+Lift compares the actual $\Pr(\cal{Q} \wedge \cal{R})$ with the independent events $\Pr(\cal{Q})\Pr(\cal{R})$ by a ratio.
+
+# Lift and Confusion Matrix
+Lift can be calculated from the confusion matrix.
+
+|Probability | Calculation |R Calculation | Metric |
+|--------------------|-------------|-----------|-------------|---------|
+|$Prob(A \wedge B)$ | 4816/(4816+104+26+54)| `r 4816/(4816+104+26+54)` | *Detection Rate* |
+|$Prob(A) = Prob(pred="No")$ | (4816+104)/(4816+104+26+54) | `r (4816+104)/(4816+104+26+54)` |`detection_prevalence` |
+|$Prob(B) = Prob(default="No")$ | (4816+26)/(4816+104+26+54) |`r (4816+26)/(4816+104+26+54)`| *Prevalence*, *No Information Rate*|
+
+$$\textrm{Lift} = \frac{\Pr(A\&B)}{\Pr(A)\Pr(B)} = \frac{Detection Rate}{(Detection Prevalence)(Prevalence)} = \frac{recall*precision}{detection\_rate}$$
+Some numbers (`precision, recall`) are available in the confusion matrix. Since `detection_rate` is not calculated in `yardstick` we have a small function in `detection_rate.R` to do it.
+
+Here we get the metrics required from the standard metrics and our function.
+```{r}
+L = bind_rows(
+  cmlog %>% summary %>% select(.metric, .estimate) %>% 
+  filter(.metric %in% c("precision", "recall")),
+  
+  tibble(.metric = "detection_rate",
+         .estimate = detectionrate(cmlog))
+            ) %>% 
+  pivot_wider(values_from=.estimate, 
+              names_from = .metric)
+L
+```
+# Lift
+Lift can be calculated from the `lift_metrics` using `recall`, `precision`, and `detection_rate`.
+
+```{r}
+L %>% mutate(Lift = recall*precision/detection_rate)
+```
+
+# Lift Curve
+A lift curve plots lift against different thresholds. Here the percent tested ranges from 0 to 100%.
+
+```{r}
+# t has the classes and the probabilities of No, the base case
+t %>% lift_curve(truth, .pred_No) %>% autoplot()
+```
+
+# Gain Curve
+The motivation behind cumulative gain and lift charts is as a visual method to determine the effectiveness of a model when compared to the results one might expect without a model. As an example, without a model, if you were to advertise to a random 10% of your customer base, then you might expect to capture 10% of the of the total number of positive responses had you advertised to your entire customer base. Given a model that predicts which customers are more likely to respond, the hope is that you can more accurately target 10% of your customer base and capture >10% of the total number of positive responses.
+
+The calculation to construct gain curves is as follows:
+
+- truth and estimate are placed in descending order by the estimate values (estimate here is a single column supplied in ...).
+- The cumulative number of samples with true results relative to the entire number of true results are found. This is the y-axis in a gain chart.
+```{r}
+t %>% gain_curve(truth, .pred_No) %>% autoplot
+```
+Virtually all found are "No", so the line shows we found all of them when we tested.
+
+# pr Curve
+Computes the `precision` at every unique value of the probability column, as a function of `recall`.
+```{r}
+t %>% pr_curve(truth, .pred_No) %>% autoplot
+```
+
+# ROC curve
+Plots `specificity` against 1-`sensitivity`.
+```{r}
+t %>% roc_curve(truth, .pred_No) %>% autoplot
+```
+
+# Application
+We will apply the methods to a real marketing dataset from ISLR2, `OJ`. The data contains 1070 purchases where the customer either purchased Citrus Hill or Minute Maid Orange Juice. A number of characteristics of the customer and product are recorded. 
+
+The balance of the dataset is more even than `Default`, but not too even. It might show the various metrics off better.
+
+The target is `Purchase` with levels the two brands of juice. Drivers are numeric, except for a factor that identifies a particular store, `Store7`. 
+
+## Data
+```{r}
+data(OJ)
+OJ
+OJ %>% skim
+```
+
+Both `Store7` and `Purchase` are fairly balanced.
+
+## Prep
+We will split randomly with a training set 80% of the data.
+```{r}
+# takes first half of data
+split <- initial_split(OJ, prop = .8) 
+train_data <- training(split)
+test_data  <- testing(split)
+dim(train_data)
+dim(test_data)
+
+# contrasts for factors
+contrasts(OJ$Purchase)
+contrasts(OJ$Store7)
+```
+
+## Train
+```{r oj log, echo=TRUE}
+OJ.logit <- log_spec %>%
+  fit(Purchase ~ ., data = train_data)
+
+OJ.logit %>% extract_fit_engine() %>% summary
+OJ.logit %>% glance %>% gt_add_significance() %>%
+  tab_header(title="glance Overall")
+OJ.logit %>% tidy %>% gt_add_significance() %>% 
+  tab_header(title="tidy Coefficients")
+```
+## Predictions
+```{r}
+# probabilities needed for later                
+probs_oj <- predict(OJ.logit, new_data = test_data,
+                 type = "prob")
+preds.class_oj = case_when(
+  probs_oj$.pred_CH >.5 ~ "CH",
+  .default = "MM") %>% factor
+preds.class_oj %>% table
+```
+## Confusion Matrix
+```{r}
+J = data.frame(truth=test_data$Purchase, 
+               estimate = preds.class_oj, probs_oj)
+
+cmoj = J %>% conf_mat(truth, estimate)
+cmoj
+```
+
+## Metrics
+```{r}
+cmoj %>% summary
+```
+
+## Metrics for Lift etc
+```{r}
+O = bind_rows(
+  cmoj %>% summary %>% select(.metric, .estimate) %>% 
+  filter(.metric %in% c("precision", "recall")),
+  
+  tibble(.metric = "detection_rate",
+         .estimate = detectionrate(cmoj))
+            ) %>% 
+  pivot_wider(values_from=.estimate, 
+              names_from = .metric) %>%
+  mutate(Lift = recall*precision/detection_rate)
+O
+```
+## Curves
+```{r}
+wrap_plots(ncol=2,
+J %>% lift_curve(truth, .pred_CH) %>% autoplot() +labs(title="Lift"), 
+J %>% gain_curve(truth, .pred_CH) %>% autoplot() +labs(title="Gain"),
+J %>% pr_curve(truth, .pred_CH) %>% autoplot()  +labs(title="PR"),
+J %>% roc_curve(truth, .pred_CH) %>% autoplot() +labs(title="ROC")
+)
+J %>% roc_auc(truth, .pred_CH) %>% select(.metric, .estimate)
+```
+
+# Conclusion {-}
+We have learned the meaning of Marketing Lift, and how it is computed using the confusion matrix.
+
+We applied the workflow to the `OJ` dataset to show a marketing application.
+
+# References {-}
+::: {#r1}
+1. Lift (data mining). (2022, June 24). In Wikipedia. https://en.wikipedia.org/wiki/Lift_(data_mining)
+
+::: {#r2}
+2. [tidy Classification and Confusion, 2025](https://learn.stfrancis.edu/courses/1192468/files/64978355?wrap=1), available in Canvas Course MBAD640.
+
+
