@@ -1,0 +1,320 @@
+---
+title: "Unemployment Rate and Unemployment Notebook"
+author: "Bruce Hartman"
+date: "2022-12-08"
+output: html_notebook
+---
+
+# Introduction
+
+We study the civilian unemployment rate and the civilian unemployment, as published monthly by the US BLS [1,2].
+
+The two are related since the rate is the quotient of unemployment by number in the work force. But one could precede or lag the other. So the question of causality occurs. We use Granger Causality to find out if there is a key statistically causal relation between them. This might allow us to show for instance, a rise in unemployment rate might lead, after some time, rise in unemployment. If there is no relation, it might mean that unemployment was leading to a loss of people in the workforce, rather than real unemployment.
+
+Granger Causality is measured by regressing the target unemployment measure on its lags and the same lags of the other measure. This tells us whether, and how much, the other measure affects the current value of the target measure. If the effect is larger compared to the effects of the lags of the target measure, this represents statistical causality. It's not actual causality, however, just numerical. It's not sufficient evidence for actual cause, but it is necessary; If there is actual causality, there would almost certainly be statistical causality.
+
+To establish actual cause, we would need to postulate some kind of an economic mechanism that would make that happen. Then we could try to find numbers that would let us test that real cause.
+
+So Granger Causality should not be confused with actual causality.
+
+# Packages
+
+The usual packages are loaded.
+
+```{r results="hide", warning=F, error=F, message=FALSE}
+library(tidyverse) # used to manipulate data and plot
+library(ggfortify) # some extra ggplot functions
+library(GGally) # pairs ggplot and other options
+library(flextable)
+library(car)# many added features for regressions
+library(caret)
+library(ISLR) # for course data
+```
+
+# Settings
+
+```{r}
+theme_set(theme_bw())
+```
+
+# Routines
+
+We have a function to allow creation of Granger Causality Tests for two time series. We source it here.
+
+```{r warnings=F}
+source("GrangerTestTune.R")
+```
+
+# Data
+
+Data come from two BLS links.
+
+```{r warning=FALSE}
+library(readxl)
+UnRate <- read_excel("~/stfrancis/MBAD640 Data Mining/Civilian Unemployment Rate 1.xlsx", 
+    skip = 1, n_max = 242)
+View(UnRate)
+```
+
+```{r warning=FALSE}
+library(readxl)
+Unemp <- read_excel("~/stfrancis/MBAD640 Data Mining/Civilian Unemployment 1.xlsx")
+View(Unemp)
+```
+
+# Description of Data
+
+```{r}
+glimpse(Unemp)
+```
+
+```{r}
+glimpse(UnRate)
+```
+
+Some problems with the data are noticed.
+
+-   Odd Column Names
+
+There are 9 columns in each dataset, and they are for identical groups in the population, including the Total. Some of the column names are long, so we should craft abbreviations to make analysis easier.
+
+# Data Wrangling
+
+We look at the data columns and change the names appropriately.
+
+```{r}
+names(Unemp)
+names(UnRate)
+```
+
+```{r}
+Unemp = Unemp %>% rename(Menover20="Men, 20 years and over",
+                         Womenover20="Women, 20 years and over",
+                         Black = "Black or African American",
+                         Under20 = "16 to 19 years old",
+                         HispLat = "Hispanic or Latino")
+glimpse(Unemp)
+```
+
+```{r}
+UnRate = UnRate %>% rename(Menover20="Men, 20 years and over",
+                         Womenover20="Women, 20 years and over",
+                         Black = "Black or African American",
+                         Under20 = "16 to 19 years old",
+                         HispLat = "Hispanic or Latino")
+glimpse(UnRate)
+```
+
+This resolves the column name issue.
+
+# Data Description
+
+```{r}
+UnRate
+```
+
+```{r}
+Unemp
+```
+
+```{r}
+# UnRate %>% summary
+UnRate %>% 
+  rstatix::get_summary_stats(
+    show=c("n","min","q1","median","mean","q3", "max","sd")) %>% 
+  flextable %>% autofit
+```
+
+```{r}
+Unemp %>% 
+  rstatix::get_summary_stats(
+    show=c("n","min","q1","median","mean","q3", "max","sd")) %>% 
+  flextable %>% autofit
+```
+
+Histograms are helpful.
+
+```{r}
+ggplot(UnRate) +
+  geom_histogram(aes(Total), bins=40, color="black", fill="red")+
+  labs(title="Unemployment Rate 2002-2022",x="Rate (%)")
+```
+
+```{r}
+ggplot(Unemp) +
+  geom_histogram(aes(Total), bins=40, color="black", fill="red")+
+  labs(title="Unemployment 2002-2022",
+       x="Total (000)")
+```
+
+# Granger Causality
+
+We test Granger causality of the two Total time series using the function provided.
+
+```{r}
+tsrate =ts(UnRate$Total)
+tsemp = ts(Unemp$Total)
+GrangerTestTune(tsrate, tsemp)
+```
+
+It appears that neither series Granger causes the other; using any number of lags less than 10 the significance level is above .05, the red dotted line.
+
+# Structural Changes
+
+Next we look for structural changes in time series. First we graph the two time series.
+
+```{r}
+tu = ggplot(Unemp) +
+         geom_line(aes(Month,Total))+
+  labs(y="Total Unemployment\n(000)")
+tr = ggplot(UnRate) +
+         geom_line(aes(Month,Total))+
+    labs(y="Total Unemp Rate\n(%)")
+new('ggmultiplot', nrow=2, plots=list(tu, tr))
+```
+
+```{r}
+forecast::ggtsdisplay(Unemp$Total)
+```
+
+These two time series have similar profiles. But the question is, did a radical change occur in 2020, when we know that Covid-19 hit, causing a substantial disruption. There seemed also to be a serious change around 2008-2010, also a disruption, this time of financial markets.
+
+The classic method of looking for structural changes is called the Chow Test. The Chow Test essentially comparing RSS of the full period with the sum of the RSS's in two different segments of the period. The idea is, if there was no structural change, the regressions on the two parts would be the same, and therefore adding up the RSS's would result in about the same RSS as running the regression on the whole time period.
+
+Since RSS is 'residual sum of squares', the method compares two squared quantities, and an F-test is appropriate. The Chow Test thus essentially computes an F-statistic; there are different degrees of freedom for numerator and denominator, as there always is in F-tests. We can then compute the p-value of the F-statistic, and see if the null hypothesis of no structural difference is accepted or not.
+
+There is a package for everything in R, and so there is one that does the Chow Test. It is in the strucchange package.
+
+```{r}
+library(strucchange)
+```
+
+The sctest() function is used to do the Chow Test. But you need to know where you think the breakpoint is. You can determine that by looking at the graphs above.
+
+### Unemp
+
+Start with Unemp.
+
+```{r}
+tu 
+```
+
+It looks like there was a long decline, approximately linear, from 2010-01-01 through the end of 2019.Then there was a jump up essentially instant, as Covid hit. Then the slope changed radically after that.
+
+So we first choose the data from 2010-01-01 to the end of the series. Then we establish a breakpoint at 2020-01-01. We compare the regressions on each of the two pieces with a regression on the whole thing, to see if we think there was a structural change starting at that breakpoint.
+
+```{r}
+fulldate=as.POSIXct("2010-01-01 UTC")
+Unemp %>% filter(Month >= fulldate) %>% nrow
+Unemp_full = Unemp %>% filter(Month >= fulldate)
+```
+
+Where do we put the breakpoint in Unemp_full?
+
+```{r}
+breakdate=as.POSIXct("2020-01-01 UTC")
+breakpoint=nrow(Unemp_full %>% filter(Month<=breakdate))
+breakpoint
+```
+
+Now run the Chow Test with that breakpoint.
+
+```{r}
+sctest(Total ~ Month, data=Unemp_full, type = "Chow", point = breakpoint)
+```
+
+The p-value is very small, so we must reject the null hypothesis that there is no structural change occurring at the breakpoint.
+
+Good news! Covid was a dislocation in unemployment numbers.
+
+### UnRate
+
+Now with UnRate.
+
+```{r}
+tr
+```
+
+It looks like there was a long decline, approximately linear, from 2010-01-01 through the end of 2019. Then there was a jump up essentially instant, as Covid hit. Then the slope changed radically after that.
+
+So we first choose the data from 2010-01-01 to the end of the series. Then we establish a breakpoint at 2020-01-01. We compare the regressions on each of the two pieces with a regression on the whole thing, to see if we think there was a structural change starting at that breakpoint.
+
+```{r}
+fulldate=as.POSIXct("2010-01-01 UTC")
+UnRate %>% filter(Month >= fulldate) %>% nrow
+UnRate_full = Unemp %>% filter(Month >= fulldate)
+```
+
+Where do we put the breakpoint in UnRate_full?
+
+```{r}
+breakdate=as.POSIXct("2020-03-01 UTC")
+breakpoint=nrow(UnRate_full %>% filter(Month<=breakdate))
+breakpoint
+```
+
+Now run the Chow Test with that breakpoint.
+
+```{r}
+sctest(Total ~ Month, data=UnRate_full, type = "Chow", point = breakpoint)
+```
+
+The p-value is very small, so we must reject the null hypothesis that there is no structural change occurring at the breakpoint.
+
+Good news! Covid was a dislocation in Unemployment Rate numbers.
+
+### Measuring the Structural Changes
+
+What was the change in Unemp and UnRate at that breakpoint. We run regressions before and after the breakpoint.
+
+```{r}
+breakdate=as.POSIXct("2020-01-01 UTC")
+Unemp_before.lm = lm(Total~Month, data=Unemp_full 
+                     %>% filter(Month<=breakdate))
+Unemp_after.lm = lm(Total~Month, data=Unemp_full 
+                     %>% filter(Month>breakdate))
+summary(Unemp_before.lm) %>% broom::tidy() 
+summary(Unemp_after.lm) %>% broom::tidy()
+```
+
+In both cases, the Unemp number was changing negatively after the break. For the before period the slope was -3.25\*10\^{-5}, or .0000325. After the structural change the slope was a much faster decline, -1.2\*10\^{-3}, or .0012, almost 100 times faster.
+
+### Another Structural Change
+
+Let's go back in time and look at the structural change that happened around 2008. The plots show us that the structural break occurred early in 2008.
+
+```{r}
+new('ggmultiplot', nrow=2, plots=list(
+  tu + 
+    geom_vline(aes(xintercept=as.POSIXct("2008-01-01")),
+               color="red")+
+    geom_vline(aes(xintercept=as.POSIXct("2009-10-01")),
+               color="blue"), 
+  tr + 
+    geom_vline(aes(xintercept=as.POSIXct("2008-01-01")),
+               color="red")+
+    geom_vline(aes(xintercept=as.POSIXct("2009-10-01")),
+               color="blue")
+  ))
+```
+
+Here there was evidently a much slower ramp-up of Unemp and UnRate, from 1/1/2008 to 10/1/2009, and then a long decline in both figures. Furthermore the downward slopes in the two zones look about the same on each side of the region between the two vertical lines. So perhaps this structural change was different-- slower acting.
+
+Remembering our history, this was the financial crisis. Several large financial firms crashed, because they were over-invested in residential mortgages that had a high rate of default. That happened because the individual mortages were of varied quality; but the financial firms and ratings agencies colluded to allow 'packages' of mortgages to be traded on a secondary market with ratings far above what the underlying mortgages would bear. And banks and mortgage lenders were not responsible for qualifying the buyers of houses-- they just packed the mortgages up into big bundles and sold them on, passing the problem to the next owner. Eventually it was too much for the large investment houses (Lehman Bros), banks (Citi), and investment houses (Goldman), who verged on bankruptcy. they were bailed out with loans and stock purchases from the US government; later on the government recouped everything they loaned and more as the financial markets recovered. See the book and movie [The Big Short](https://www.imdb.com/title/tt1596363/) for dramatized details.
+
+It will be hard to make a movie about the Covid structural change that won't be a downer.
+
+# Conclusion
+
+We've tried to apply two techniques to some Unemployment and Unemployment Rate data that came from the BLS. They covered 2002 to 2022 (November), and included two periods of structural change to the economy that we could clearly identify in the data.
+
+This idea of structural change, some outside force driving a change in the time series (often called an exogenous force), is interesting, and the fact that math can detect it is useful to know. The technique is studied in more detail in MBAD 637, which deals with forecasting and econometrics.
+
+We also wondered if we could identify any statistical causality between the unemployment numbers and the unemployment rate numbers. We used the Granger Causality tests in R, but found no Granger causality in either direction between the two series.
+
+The data show the classic symptoms of autoregression, as most time series do. Ideally each series should be investigated for stationarity, and differences substituted if required to make the resulting series stationary. We leave that for a paper in MBAD637, which includes a study of time series methods.
+
+# References
+
+1.  Bureau of Labor Statistics (BLS) 2022. [Graphics for Economic News Releases](https://www.bls.gov/charts/home.htm). Civilian Unemployment Rate. Retrieved 12/1/2022 from <https://www.bls.gov/charts/employment-situation/civilian-unemployment-rate.htm>.
+2.  Bureau of Labor Statistics (BLS) 2022. Civilian Unemployment. Retrieved 12/1/2022 from <https://www.bls.gov/charts/employment-situation/civilian-unemployment.htm>.

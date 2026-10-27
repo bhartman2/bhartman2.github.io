@@ -1,0 +1,133 @@
+---
+title: "Multinomial regression with tidymodels"
+author: 
+  name: "Bruce Hartman"
+  affiliation: "University of St. Francis"
+date: "`r lubridate::today()`"
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+abstract: |
+  We use tidymodels to do a multinomial regression on the iris datset, with crossvalidation and repetition.
+---
+
+# Packages
+```{r}
+library(mbadtools)
+conflicted::conflict_prefer_matching("select|filter", "dplyr", quiet=TRUE)
+library(tidymodels)
+```
+
+# 1. Load data and set seed
+```{r}
+data(iris)
+set.seed(123) # for reproducibility
+```
+
+# 2. Create a resampling object
+With 10 repeats of 10-fold CV; (adjust 'v' if you want a different number of folds)
+```{r}
+my_resamples <- vfold_cv(iris, v = 10, repeats = 10)
+```
+# 3. Define your model and workflow 
+Example: a multinomial regression using `glmnet` rather than the default `nnet`. The `glmnet` model uses lasso when penalty is set to 1.
+
+```{r}
+my_model <- multinom_reg(penalty=double(1)) |> set_engine("glmnet")
+```
+
+```{r}
+my_workflow <- workflow()  |> 
+  add_model(my_model)  |> 
+  add_formula(Species ~ .)
+```
+
+# 4. Fit the model across all resamples
+The `fit_resamples` function automatically iterates through all 100 splits (10 folds * 10 repeats). This takes a while.
+
+```{r}
+tictoc::tic()
+model_results <- fit_resamples(
+  my_workflow,
+  resamples = my_resamples
+)
+tictoc::toc()
+```
+
+# 5. View the results
+```{r}
+?collect_metrics
+```
+
+e.g., mean values
+```{r}
+collect_metrics(model_results)
+```
+
+```{r}
+collect_metrics(model_results, summarize=FALSE)
+```
+```{r}
+collect_metrics(model_results, summarize=FALSE, type="wide")  |> 
+  mutate(across(is.numeric, ~ round(.x, digits=5)))
+```
+
+```{r}
+collect_metrics(model_results, summarize=FALSE) |> 
+  select(-c(.estimator, .config))  |> 
+  pivot_wider(names_from=.metric, values_from = .estimate, values_fn = mean)  |>  
+  group_by(id) %>% summarize(mean_accuracy = mean(accuracy),
+                             mean_roc = mean(roc_auc),
+                             mean_brier = mean(brier_class)
+                             ) |>  
+    mutate(across(is.numeric, ~ round(.x, digits=4)))
+```
+
+This table shows the 10 runs each over 10 folds, and the mean values of the metrics over those 10 folds.  The Brier scores are all near 0 meaning that the model is well calibrated; it predicts a proportion in each of the three classes very similar to the proportion observed in the sample.
+Accuracy and roc should both be large, near 1.
+
+
+This one does the same for folds. We don't really care about that.
+```{r}
+collect_metrics(model_results, summarize=FALSE) |> 
+  select(-c(.estimator, .config)) |> 
+  pivot_wider(names_from=.metric, values_from = .estimate, values_fn = mean) |> 
+  group_by(id2) %>% summarize(mean_accuracy = mean(accuracy),
+                             mean_roc = mean(roc_auc),
+                             mean_brier = mean(brier_class)
+                             ) |> 
+  mutate(across(is.numeric, ~ round(.x, digits=4)))
+  
+```
+We are more interested in the first table.
+
+# Gemini Appendix
+
+#🎯 Interpreting the `brier_class` Metric
+The `brier_class` metric, often used in the **tidymodels** framework via the **yardstick** package, computes the **Brier Score** for classification models. It is a key metric for evaluating the quality and *calibration* of your model's predicted probabilities.
+
+## What the Brier Score Measures
+The Brier Score is analogous to the **Mean Squared Error (MSE)** in regression models, but applied to predicted probabilities of classification outcomes:
+
+1. **It compares:** The squared difference between the predicted probability for a class and the actual outcome (encoded as 0 or 1).
+2. **It is averaged:** Across all predictions and classes (for multiclass problems).
+3. **Its formula** (as used in the yardstick package, which divides the result by two) for K classes and N observations is:
+
+$$ Brier = \frac{1}{2N} \sum_{i=1}^N \sum_{j=1}^K (y_{ij} - \hat{p}_{ij})^2 $$
+
+where $y_{ij}$ is a binary indicator (0 or 1) that observation i belongs to class k, and $\hat{p}_{ij}$ is the predicted probability for observation i belonging to class j [1.1, 1.4].
+
+## Key Interpretations 
+* **Range:** The Brier Score typically ranges between **0 and 1** (or 0 and 2 depending on the formula convention; the yardstick `brier_class` is scaled to be between 0 and 1) [2.1, 2.7].
+* **Optimal Value:** **Smaller values are better.** A perfect model achieves a score of **0** [2.1].
+* **Worst Value:** The worst score is **1** (for the scaled version).
+* **Baseline/Uninformative Model:** For binary classification, a model that always predicts a probability of 0.5 (a "fence-sitter") will have a Brier score of around **0.25** [2.5, 1.5]. Scores significantly above 0.25 indicate a very poor model.
+
+* **Calibration vs. Separation:** The Brier Score is excellent for measuring **model calibration** [1.5, 2.6].
+
+* **Calibration** means that if your model predicts a class with 70% probability, the actual event should occur about 70% of the time among all cases with that prediction probability.
+* Metrics like **ROC AUC** measure **separation** (the model's ability to rank positive cases higher than negative cases), but don't explicitly measure if the probabilities are realistic [1.5].
+
+In summary, the `brier_class` metric tells you how close your model's predicted probabilities are to the true outcomes. If your primary concern is having reliable, realistic probability estimates (which is often crucial for decision-making), a **low Brier Score** is a sign of a high-quality, well-calibrated model.

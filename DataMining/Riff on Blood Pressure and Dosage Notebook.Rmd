@@ -1,0 +1,101 @@
+---
+title: "Riff on Blood Pressure and Dosage Notebook"
+output: html_notebook
+---
+
+# Introduction
+Sarah's post for Discussion A on use of linearity for drug effects intrigued me.
+
+# Packages
+We load the required packages.
+```{r label="pkg", results = 'hide', message=FALSE, warning=FALSE}
+library(tidyverse) # used to manipulate data and plot
+library(ggfortify) # some extra ggplot functions
+library(GGally) # pairs ggplot and other options
+library(car) # many added features for regressions
+library(flextable)
+library(MASS) # Boston data
+library(ISLR, verbose=FALSE, quietly=TRUE) # most data
+```
+
+# Data
+First the raw data.
+```{r}
+Dose= c(2.5,5,10,20, 40,60)
+Reduction = c(5.7, 6.4, 8.45,9.5,12,12.5)
+```
+
+Put into a data frame.
+```{r}
+sarah = data.frame(Dose=Dose, BPRed = Reduction)
+```
+
+Make the graph to check.
+```{r}
+ggplot(sarah) +
+  geom_point(aes(Dose, BPRed), shape="triangle", size=4)+
+  geom_line(aes(Dose, BPRed))+
+  theme_bw()
+```
+
+Now plot the Reduxction vs log of Dose.
+
+```{r}
+ggplot(sarah) +
+  geom_point(aes(log(Dose), BPRed), shape="triangle", size=4)+
+  geom_line(aes(log(Dose), BPRed))+
+  theme_bw()
+```
+
+Much straighter. The transformation of Dose fixed it.
+
+Let's check the residuals by running regressions in both cases.
+
+```{r}
+sarah.fit = lm(BPRed~Dose, data=sarah)
+summary(sarah.fit) %>% broom::tidy()
+summary(sarah.fit) %>% broom::glance()
+autoplot(sarah.fit)
+```
+
+R-squared is 87% but residuals form a hump (RF plot) and standard residuals vary wildly (SL plot).
+
+The overall sigma is 1.09. The p-value of the overall regression is .005 or 5x10^-3. 
+
+```{r}
+sarah.logfit = lm(BPRed~log(Dose), data=sarah)
+summary(sarah.logfit) %>% broom::tidy()
+summary(sarah.logfit) %>% broom::glance()
+autoplot(sarah.logfit)
+```
+
+The R-squared is 98%, the residuals are centered around 0, and the SL plot shows much less gain. The sigma is only .32 and the p-value for the ovewrall regression is 4x10^-5.
+
+# Discussion
+The transform makes the regression a much higher quality one, with much less variation in hte residuals, and much more predictive power.  So using the log transform is a good tool for removing the problems.
+
+# More Insight
+Why does this work?  Let's examine the original data.  
+```{r}
+Dose %>% as_tibble_col(column_name="Dose") %>% flextable()
+```
+
+As is common in medical experiments to find a proper dosage the dosage was approximately doubled for each level.  I maybe made a mistake looking at the original graph in picking out a dose of 4 for the first point. Perhaps it was 2.5, if so it's a direct doubling. So that is an exponential increase.  Therefore taking the log of Dose makes it into a linear variable!!!!!
+
+So it appears that as Sarah said, increasing Dose linearly reduces BP linearly!!!!  She is absolutely right to think of linear functions as appropriate for drug effects.
+
+And we saw that a residual graph that looks like a kind of hump shape
+```{r}
+autoplot(sarah.fit, which=1)
+```
+
+can be changed using a log of the independent variable to a graph more like a normal random graph with zero means like this. The range of the residuals is much smaller also, instead of from -1 to 1 it is -.25 to .25. We want residuals to be small.
+
+```{r}
+autoplot(sarah.logfit, which=1)
+```
+
+
+# Conclusion
+
+We can learn a lot about transforms with a little exploration.

@@ -1,0 +1,477 @@
+---
+title: The Gottingen Videos
+author: Bruce Hartman
+affiliation: University of St. Francis
+email: bruce@ahartman.net
+subtitle: YouTube lectures by Christoph Scherber
+date:  2026-10-22 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook: 
+    toc: TRUE
+    toc_float: TRUE
+    theme: readable
+    highlight: tango
+abstract: |
+  We update the Gottingen Videos R code to the latest tidyverse methods.
+---
+
+# Introduction
+These videos by Christoph Scherber outline the whys and wherefores of regression in simple language. Scherber is a professor at the University of Gottingen in Germany, one of the finest scientific institutions in the world.
+
+In this notebook I display the code and results that go with the video, and use the updated tidyverse version when it is appropriate.
+
+Enjoy the videos and follow along.
+
+# Packages
+We use the customary packages.
+```{r}
+library(mbadtools) # course requjired packages
+```
+
+# Gottingen 1
+[The first video](https://youtu.be/Xh6Rex3ARjc)
+
+## Data
+Data is available from the `datasets` package, part of R.
+```{r}
+?airquality
+glimpse(airquality)
+airquality # all the data in a pageable format
+```
+
+## Data Examination
+```{r}
+airquality %>% skim
+which(is.na(airquality))
+```
+
+Lots of rows have missing data. `Ozone` is missing in 37 rows and `Solar.R` is missing in 7 rows.
+
+### Visualize Data
+We plot `Ozone` as a function of `Solar.R` solar radiation. 
+
+```{r}
+ggplot(airquality) +
+  geom_point(aes(Solar.R,Ozone))
+```
+
+The rows with missing values were not plotted.  There is evidence of a linear trend, though not strong.
+
+## Averages
+Get averages from the `skim` output. But first we use the `mean` function to show the effect of missing values.
+```{r}
+mean(airquality$Ozone)
+airquality$Ozone
+```
+
+```{r}
+airquality %>% pull(Ozone) %>% mean
+```
+Because of the NAs in the Ozone column, the answer is NA.
+
+Why doesn't it work? Why do we need to force the mean function to remove the NAs? Calculate mean of Ozone concentration, removing NAs.
+```{r}
+mean(airquality$Ozone, na.rm=TRUE)
+mean.Ozone = mean(airquality$Ozone, na.rm=TRUE)
+mean.Ozone
+```
+
+`tidyverse` way:
+```{r}
+mean.Ozone = airquality %>% pull(Ozone) %>% mean(na.rm=TRUE)
+mean.Ozone
+```
+
+## Using `skim`
+```{r}
+airquality %>% dplyr::select(Ozone, Solar.R) %>% 
+  skim()
+```
+Notice I did not have to omit the missing values. Fetch the values out:
+```{r}
+airquality %>% select(Ozone, Solar.R) %>% 
+  skim() %>% 
+  select(skim_variable, numeric.mean)
+```
+
+Let's add the mean value as a black line.  The basic R function allows you to add to a plot, but that's a problem later on. How do you know when the plot is stopped? The better `tidyverse` way:
+```{r}
+ggplot(airquality %>% na.omit) +
+  geom_point(aes(Solar.R, Ozone)) +
+  geom_hline(aes(yintercept=mean.Ozone)) + 
+  geom_abline(aes(intercept=15, slope=85/300), color="blue")
+```
+
+## Linear Regression
+We do a linear regression to model the dependency of `Ozone` on `Solar.R`.
+
+```{r}
+?lm
+#use lm to fit regression line thru these data
+model1=lm(Ozone~Solar.R, data=airquality)
+#notice it ignores the NA values automatically
+model1
+```
+
+It tells us the best fitting coefficients are, intercept of about 18.6 and slope of about .127.
+
+Let's put it on the same plot. We grab the coefficients from the model using the `coef()` function.
+```{r warning=FALSE}
+ggplot(airquality) +
+  geom_point(aes(Solar.R,Ozone)) +
+  geom_hline(aes(yintercept=mean.Ozone)) + 
+  geom_abline(aes(intercept=15, slope=85/300), color="blue") +
+  geom_abline(aes(intercept=coef(model1)[1], 
+                  slope=coef(model1)[2]), 
+              color="red")
+```
+Our blue guess was quite wrong. The red line is the real regression line.
+ 
+## Residuals
+Residual analysis should be next!!! No regression is better than its residuals.
+```{r}
+residuals(model1) %>% head
+```
+
+Plot the residuals in a nice MBAD640 way.
+```{r}
+model1 %>% gg_residual_plots()
+```
+
+## Partial Residual Plots
+The modern way:
+
+```{r message=FALSE}
+model1 %>% gg_partial_residual_plots()
+```
+
+## Basic Regression Output
+The basic report from a regression. Can be useful for a quick look, but you can't retrieve any of the values from the `summary` object.
+```{r}
+summary(model1)
+```
+
+## `tidy` Regression Output
+```{r}
+model1 %>% tidy(conf.int=TRUE) # shows just the coefficient part
+model1 %>% glance() #shows just the overall part, the R-squared etc.
+model1 %>% augment() # shows all observations, the fitted and residuals, and various numbers related to outlier analysis.
+```
+
+# Gottingen 2
+[This video](https://youtu.be/ksOErR1ldgo) covers more than one variable plus interaction. We will work with `Ozone` as it depends on `Solar.R` and `Wind`.
+
+## Univariate variation
+```{r}
+airquality %>% ggplot() +
+  geom_point(aes(Solar.R, Ozone))
+airquality %>% ggplot() +
+  geom_point(aes(Wind, Ozone))
+```
+
+
+`Solar.R` pushes `Ozone` up, and `Wind` pushes it down. We can do a pairs plot.
+
+```{r warning=FALSE}
+ggpairs(airquality, columns=1:3, progress=FALSE)
+```
+
+## Interactions
+Look for an interaction between variables.
+```{r}
+coplot(Ozone~Solar.R|Wind, panel=panel.smooth, data=airquality)
+```
+
+The ggplot way is to use the `ggcleveland` package. We did not attempt to replicate the default plot above by setting the cutpoints or bins for `Wind`.
+
+This package would be a good candidate for my MBAD standard packages. There are several nice plots. But the documentation is in Spanish!!!
+```{r message=FALSE, warning=FALSE}
+library(ggcleveland)
+airquality %>% gg_coplot(x=Solar.R, y=Ozone, faceting=Wind)
+```
+
+## Regression
+We will do a regression  with Ozone dependent on Solar.R, Wind, and interactions.
+```{r}
+model2=lm(Ozone~Solar.R*Wind, data=airquality)
+```
+
+Next a residual plot.
+
+```{r}
+model2 %>% gg_residual_plots()
+```
+
+This plot raises eyebrows. The big parabola curve in the Residual Plot indicates nonlinear relations with the predicted values. A square root transform might be indicated.
+
+Finally a summary. And the modern versions.
+```{r}
+summary(model2)
+model2 %>% glance()
+model2 %>% augment()
+model2 %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The solar and wind coefficients are conditioned on 0 for the other. We can see there is a sizeable and meaningful (nonzero coefficient) interaction term, as well as a significant Solar.R term.
+
+The partial plots ignore the interaction.
+```{r message=FALSE}
+model2 %>% car::residualPlots(fitted=FALSE, tests=FALSE)
+```
+
+A summary of `Solar.R`:
+```{r}
+summary(airquality$Solar.R)
+```
+
+## Predictions
+The `predict` function uses the model to make predictions. If we don't tell it the `newdata` parameter, it uses all the values of the drivers to make predictions at. We could also use augment, which would give us a lot more in a nice format. The `augment` output predictions are in the `.fitted` column.
+```{r}
+model2 %>% predict()
+model2 %>% augment()
+```
+
+If we feed in some `newdata`, such as values for `Solar.R` and `Wind`, we get the prediction for those driver values. The `newdata` must be in a data frame. The result is the fitted value of Ozone at those two driver data values. It includes the interaction effect. `augment` can also be used to get data frame output.
+```{r}
+predict(model2, newdata = data.frame(Solar.R=100, Wind=10))
+model2 %>% augment(newdata = data.frame(Solar.R=100, Wind=10))
+```
+
+Let's do some more, fixing `Solar.R` and the three values computed above, and letting Wind vary from 1 to 20.
+```{r}
+p1=predict(model2, 
+           newdata = data.frame(
+             Solar.R = mean(airquality$Solar.R, na.rm = TRUE),
+             Wind= 1:20))
+p2=predict(model2, data.frame(Solar.R=100, Wind=1:20))
+p3=predict(model2, data.frame(Solar.R=300, Wind=1:20))
+```
+
+Do it all at once:
+```{r}
+M = mean(airquality$Solar.R, na.rm = TRUE)
+newpoints = data.frame(
+  Group = c(rep(1, 20, 2, 20, 3, 20)),
+  Solar.R = c(
+    rep(M, 20),
+    rep(100, 20), 
+    rep(300, 20)
+    ),
+  Wind = rep(1:20,3)
+  )
+newpoints
+
+model2 %>% augment(newdata=newpoints)
+```
+
+What are the units of measure?
+```{r}
+?airquality
+```
+
+Let's plot the results.
+```{r}
+D = model2 %>% augment(newdata=newpoints)
+D
+ggplot(D)+
+  geom_point(aes(Wind, Solar.R)) +
+  facet_wrap(newpoints$Group) +
+  # geom_line(aes(1:20, p1)) +
+  # geom_line(aes(1:20, p2), color="green")+
+  # geom_line(aes(1:20, p3), color="red")+
+  theme_bw()
+```
+
+# Gottingen 3
+[This video](https://youtu.be/P-WYkSZp9lY) covers problems in regression and censoring.  
+
+## Introduction
+We study fitting models different from `lm()`. Why?
+
+- Use `glm` when there is not normal error and not constant variance
+- Use `gls` for correlated errors or space/temporal patterns or trends
+
+```{r}
+airquality
+ggplot(airquality) +
+  geom_point(aes(Wind, Ozone))
+```
+
+## Regression
+A linear predictor.
+$$y = a + bx + u$$
+
+```{r}
+model1 = lm(Ozone~Wind, data=airquality)
+```
+
+## Residual analysis
+```{r}
+model1 %>% gg_residual_plots()
+```
+There are problems with the residuals.
+
+Coefficients:
+```{r}
+coef(model1)
+```
+
+Predictions of windspeeds of 19 and 20.
+```{r}
+ozone19=coef(model1)[1]+ coef(model1)[2]*19
+ozone20=coef(model1)[1]+ coef(model1)[2]*20
+ozone19; ozone20
+predict(model1, newdata=data.frame(Wind=19:20))
+augment(model1, newdata=data.frame(Wind=19:20))
+```
+
+Proves that the linear equation is how the `predict` function does it.
+
+## Issues
+Negative values of ozone are impossible. But we got them for nominal wind speeds.
+
+## `glm` Model
+```{r}
+model2=glm(Ozone~Wind, data=airquality, family=poisson)
+```
+
+$$y = \exp (a + bx + u) = e^a * e^bx + u $$
+We have to take log to get back to original answer.
+
+```{r}
+coef(model2)
+```
+
+Make predictions with the new model.
+```{r}
+ozone19.glm=exp(coef(model2)[1]+ coef(model2)[2]*19)
+ozone20.glm=exp(coef(model2)[1]+ coef(model2)[2]*20)
+ozone19.glm; ozone20.glm
+exp(predict(model2, newdata=data.frame(Wind=19:20)))
+```
+
+These are the same:
+```{r}
+ozone20.glm/ozone19.glm
+exp(coef(model2)[2])
+```
+
+The slope of the glm model gives us the proportional change if we change wind speed by 1 unit.
+
+## `gls` Models
+This function is in the package `nlme`, so install it first. Here we have to exclude the missing values.
+```{r}
+library(nlme)
+?gls
+model3=gls(Ozone~Wind, data=airquality, na.action=na.exclude) #missing values
+summary(model3)
+```
+
+This is not a linear model, so we need to measure the quality of the regression by AIC or BIC rather than R-squared.
+
+## Comparing `gls` regressions
+We will convert the date information in `airquality` into a date field we can use. There are month and day data.
+```{r}
+head(airquality)
+# get a date - all the data are from 1973
+paste(1973, airquality$Month,airquality$Day, sep="-")
+airquality$Date=as.Date(paste(1973,airquality$Month,airquality$Day,sep="-"))
+```
+
+Now make some plots.
+```{r}
+library(lattice)
+xyplot(Ozone~Date,airquality)
+
+ggplot(airquality) + 
+  geom_point(aes(Date, Ozone))
+```
+
+## Models with correlation and interaction
+We will make sure we have only complete cases with Ozone numbers.  Then we make a model with interactions, and then update it with an AR1 correlation matrix. Model 6 is required because of the ACF plot of model 5.
+
+```{r}
+air2=subset(airquality, complete.cases(Ozone))
+model5=gls(Ozone~Wind*Date, air2)
+plot(ACF(model5,form=~Date), alpha=0.05)
+model6=Matrix::update(model5,correlation=corAR1())
+```
+
+Now we compare `model5` with `model6`.
+```{r}
+(model5 %>% summary)$AIC
+(model6 %>% summary)$AIC
+```
+The `gls` model `model6` is slightly better than `model5`. Smaller AIC is better.
+
+# Gottingen 4
+Now we try to understand contrasts!! [The Video](https://youtu.be/eVSIDf5w1_I).
+
+We use a new dataset, `OrchardSprays`. It is a latin square design of an experiment with lime sulfur in the cells of a honeycomb.
+
+There are 8 rows and 8 columns, H is the control treatment. y ~ treatment (8 levels)
+The summary table has intercept (first in alphabet) and a line for each treatment.
+
+```{r}
+data(OrchardSprays)
+?OrchardSprays
+str(OrchardSprays)
+```
+
+Always plot the data.
+```{r}
+plot(decrease~treatment, data=OrchardSprays)
+ggplot(OrchardSprays) +
+  geom_boxplot(aes(treatment, decrease), fill="gray")+
+  theme_bw()
+```
+
+## Linear Model
+```{r}
+model1=lm(decrease~treatment,data=OrchardSprays)
+summary(model1)
+```
+
+## `gls` model
+We also make a `gls` model and then update it with weights set specially. Why? Because the variances of the different treatments vary. In the plot we see that the variances are not the same throughout. So we would expect not to be able to use anova. The gls does that. The `varIdent` makes variance depends on treatment.
+
+```{r}
+model2=gls(decrease~treatment, data=OrchardSprays)
+model3=Matrix::update(model2, weights=varIdent(form=~1|treatment))
+AIC(model2,model3)
+```
+
+```{r}
+summary(model3)
+```
+
+Note the standard errors are now all different and it shows us the different variances.
+```{r}
+plot(decrease~treatment, data=OrchardSprays)
+OrchardSprays %>% ggplot() +
+  geom_boxplot(aes(treatment, decrease), fill="gray") +
+  theme_bw()
+```
+
+## Successive Difference Contrasts
+You may need to install the `MASS` package.
+```{r}
+library(MASS) 
+?contr.sdif()
+# contrasts by successive differences
+options(contrasts = c("contr.sdif","contr.sdif"))
+```
+
+Now we run our two models again, after setting the options for successive difference contrasts.
+```{r}
+model4=gls(decrease~treatment,data=OrchardSprays)
+model5=Matrix::update(model4,weights=varIdent(form=~1|treatment))
+```
+
+```{r}
+summary(model5)
+```
+
+# Conclusion
+We have completed the coding for the four Gottingen videos. Hope you enjoy watching and learning.
+
