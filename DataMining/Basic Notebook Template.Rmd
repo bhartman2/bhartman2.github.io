@@ -1,0 +1,76 @@
+---
+title: Basic Notebook Template
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-28 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_float: TRUE
+    theme: united
+    highlight: tango
+abstract: |
+  This is a good notebook template to start with. 
+---
+
+# Introduction {-}
+Here write what you are going to do. Add a reference: [(Hartman, 2004)](#r1). 
+
+Use '# ' at beginning of a line to make a new header (note the space after the '#').
+
+# Packages {-}
+**You only need to do this once in the term.** 
+The `pak` package for managing packages will be installed, if you have not already done so. 
+
+```{r}
+# allow package installation from all sources
+if(!("pak" %in% installed.packages())) install.packages("pak")
+```
+
+**We only need to do this once, after we do the above. ** 
+We install package `mbadtools` from GitHub, using the `pak` function. This package is used in USF's MBAD courses and is not on CRAN. 
+```{r}
+# install mbadtools from github
+pak::pak("bhartman2/mbadtools") # if it's already up to date nothing will happen
+```
+
+**Use this chunk in every new notebook!!** 
+Make the `mbadtools` package available to the notebook. It loads several other packges wwe will use frequently.
+```{r}
+library(mbadtools, quietly=TRUE)
+```
+
+# Data {-}
+Here we get the data using *Import Dataset* button or from a package like ISLR2.
+
+# Data Description {-}
+Describe the data using simple display, or `skim()`. You might want `glimpse()` to see just the columns and a short sample.
+
+# Research Problem {-}
+State the problem you will solve. This could affect how you need to wrangle the data.
+
+# Data Wrangling {-}
+Make changes to the data to prepare it for analysis.
+
+# Data Visualization
+Graphic displays of data such as pairs plot.
+
+# Analysis {-}
+Explain what analysis you are doing. Add a formula in math notation like this:
+
+::: {#eq1}
+$$E = mc^2\hspace{100pt} (1)$$
+
+## Analysis Section {-}
+An extension of the analysis. Notice '## ', two ## and space for header level 2.
+
+> Blockquote text copied from the text or an article
+
+# Conclusion {-}
+My conclusions are ...  Refer back to a formula or location in this document: [Equation 1](#eq1)
+
+# References {-}
+::: {#r1}
+1. Hartman, B. (2026) Basic Notebook Template. (https://github.com/bhartman2/mbadtools/blob/main/notebook/Basic%20Notebook%20Template.Rmd)
+

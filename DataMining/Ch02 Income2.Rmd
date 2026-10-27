@@ -1,0 +1,346 @@
+---
+title: Ch02 Income2
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-14 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    nighlight: tango
+abstract: |
+  We analyze the Income data from Chapter 2 of [ISLR](#r1), in an R Notebook. We make the graphs in Section 2.1.2.
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Introduction
+In this notebook we will analyze the Income dataset according to the book, as described in [Reference 1](#r1) page 17. 
+
+One of the things we will show is how to display information in 3D plots. This is only useful when there are exactly two drivers in our regression. We need to do analysis based on the numeric summaries only for more than two drivers. However, we can get a good understanding of how regression works in multiple regressions by using 3D visualizations for examples with two drivers, as we do here.
+
+You will be able to see the regression plane clearly, and also why the chosen plane is a good fit. It's also useful to see how the data range about the chosen plane. Outliers that look numerically like outliers may not be changing the regression plane at all, or may be having a big effect.
+
+# Packages
+First we want to make all the packages for the course available, using `mbadtools`. 
+```{r}
+library(ISLR2) # some data files
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+library(mbadtools)
+``` 
+
+We add some packages for 3D plotting, a mysterious art.
+```{r}
+# some packages for 3D plotting; don't regularly add them.
+library(rgl)
+library(plotly)
+```
+# Data
+
+The data we will use is from the `Income2` dataset. We are following the book starting at about page 18, where it introduces this data. The data is not in the `ISLR2` package. We have a csv file for this data. The columns are:
+
+- an ID for each of 30 individuals
+- Education in years of education
+- Seniority in months on the job
+- Income in of thousands of dollars
+
+We will read in the data from the Income2.csv file using the *Import Dataset* capability in the RStudio upper right panel. We can look on our computer for the data, and make sure the instructions for fetching it are matched to our computer. Copy the code used to read the data correctly and place it here for reproducibility.
+
+```{r}
+library(readr)
+Income <- read_csv("Income2.csv", show_col_types = FALSE)
+Income
+```
+
+Notice that all columns are numeric data coded as _<dbl>_ above. We will change the name of the first column to `ID`.
+```{r}
+Income = Income %>% rename(ID=`...1`)
+```
+
+
+# Data Description
+Next we always describe the data so we know what the columns are called, how much data there is, and the range of values present.
+
+```{r}
+Income %>% glimpse
+Income %>% skim
+```
+We see that there are 30 rows of data, and 4 numeric columns. The `Education` column ranges from 10 to 21 years, `Seniority` from 20 to 187 months, and `Income` from 17.6 to 99.9 (in thousands of dollars). The min column is called `p0` and the max `p100`. Page over to see them.
+
+# Research Question
+We would like to know whether `Income`, the target, is related to `Education` and `Seniority`, the drivers.
+
+- H1: `Income` is positively related to `Education`
+- H2: `Income` is positively related to `Seniority`
+- H3: `Income` is positively related to both `Education` and `Seniority` simultaneously.
+
+# More Description
+A pairs plot tells us correlations and gives us small graphs of the one variable against another. We'll select just the columns we choose to look at.
+```{r}
+Income %>% select(Education, Seniority, Income) %>% ggpairs(progress=FALSE)
+```
+
+`Income` and `Education` seem to be highly correlated, but `Income` is only moderately correlated with `Seniority`. But both correlations are positive, which is what we might expect from our hypotheses.
+
+# Visualizing Data
+
+Let's plot Income against Seniority and then Education. For Education, this correspond to the left graph in [Reference 1](#r1) Figure 2.2.  
+
+This data is simulated, not real data; the right picture in the graph shows the 'true' underlying relation, an s-shaped curve plus a random variation from it. We will not reproduce the right graph. 
+
+We will use a black and white theme.
+```{r}
+# put first plot in `p1` object
+p1=ggplot(Income) +
+  geom_point(aes(x=Seniority, y=Income))+
+  theme_bw()
+# put second plot in `p2` object
+p2=ggplot(Income) +
+  geom_point(aes(x=Education, y=Income))+
+  theme_bw()
+# use patchwork to display the plots side by side
+p1+p2
+```
+
+`Income` seems to be strongly related to `Education`, and less strongly to `Seniority`.
+
+We can say this because the `Education` points are 'closer' to some straight line through them. The `Seniority` points are much more dispersed.  This reflects the correlation coefficients found with the pairs plot. 
+
+Note that these plots are also produced in the `ggpairs()` output above.
+
+This is evidence against H1 and H2 being wrong for our data.
+
+# 3D Plotting
+In this section we will demonstrate several ways to make a 3D plot with R of `Income` vs `Education` and `Seniority`. 
+
+First we will try to replicate Figure 2.3 in the text. 
+
+We will try using the `rgl` package from R. To get the plot into your preview, we need to use the code after setting up `rgl`.
+
+```{r}
+# Figure 2.3 ------------
+# not really the whole picture, but showing that 3D plots are possible
+# don't forget to install rgl first
+library(rgl)
+setupKnitr(autoprint = TRUE)
+plot3d(Income$Education,Income$Seniority,Income$Income, colvar=NULL,
+          type="p", pch=16, col="red", ticktype="detailed",
+          xlab="Years of Education",ylab="Seniority",zlab="Income")
+```
+
+The plot shows the data cloud nicely and can be rotated to get different views.
+
+# Linear Regression
+
+We would like to quantify the relations suggested by H1-H3.
+
+Let's run a linear regression model of Income ~ Seniority + Education to obtain data points for the fitted plane. Income is the _target_ and the others are the _drivers_, a choice of words that implies some sort of cause. 
+
+But this is just mathematics, not any suggestion of cause and effect. Cause and effect would need further confirmation based on the analyst suggesting a mechanism by which an Education or Seniority increase would compel an increase in Income.  We are not doing that here. After all the data is simulated!
+
+We will create a regression object `fit.income` using the `lm()` function, and look at the results. This is the usual sequence of events in linear modeling. Plotting the residuals is essential for a linear model.
+
+```{r}
+fit.income = lm(Income~Education+Seniority, data=Income)
+fit.income %>% glance
+fit.income %>% tidy(conf.int=TRUE)
+fit.income %>% gg_residual_plots()
+```
+
+Look at the `glance` output. What is Adjusted R-squared? Is the regression significant or not? The null hypothesis that all coefficients are zero. The alternate hypothesis is that at least one is not zero. How do we tell? 
+
+Look at the `tidy` output. Which individual coefficients are significant? Null hypothesis = a coefficient is 0, alternate is that coefficient is not zero.
+
+There is an estimation error for the coefficients; they might not really be exactly what the numbers show, but we would like to know how confident we are that the exact values are nearby.  Confidence intervals for the coefficients show us that.
+
+In the `tidy` output we can see the coefficients, and 95% confidence intervals on each coefficient. There are also short functions `coef` and `confint` to see the coefficients and confidence intervals. 
+
+I will add into my text the values of the coefficients computed by R rather than typing out the numbers. Here is how to do it in the paragraph below.
+
+We see that the `Education` coefficient is `r coef(fit.income)[2]`, and the `Seniority` coefficient is estimated at `r coef(fit.income)[3]`. 
+
+Use the `gt_add_significance` function to add significance color to the table of coefficients. 
+```{r}
+fit.income %>% tidy(conf.int=TRUE) %>% gt_add_significance()
+```
+
+The confidence interval for the `Education` coefficient shows us that there is a 95% chance that the coefficient is really between 5.16 and 6.63. The confidence interval for the `Seniority` coefficient shows us that there is a 95% chance that the coefficient is really between 0.122 and 0.223.
+
+# Residuals
+Look at the residual plots. Do residuals follow the 4 assumptions of regression?
+```{r}
+fit.income %>% gg_residual_plots()
+```
+# Fitted Values
+
+Now we'll show the fitted (predicted) values from the regression. We will also look at what the `predict()` function shows. They should match exactly. We will only show the first 10. `augment()` shows the predictions in the `.fitted` column. This is the old way to do it.
+
+```{r}
+predict(fit.income) %>% head(10)
+fit.income %>% augment
+```
+
+`augment` does a better job.  The `augment` function is good for predictions and lots of other info. With the parameter 'interval="confidence"' we can get confidence intervals on each prediction (fitted value).
+
+```{r}
+fit.income %>% augment(interval="confidence")
+```
+
+If we want to predict some other data it can be done with the 'newdata' parameter. The new data must be a dataframe with the same columns as the drivers in the regression. Supply a dataframe with the driver data you want to make a prediction for.
+
+```{r}
+new_data = data.frame(Education=c(12,14,16), Seniority=c(20,40,60))
+fit.income %>% augment(newdata=new_data, 
+                       se.fit=TRUE, 
+                       interval="confidence")
+```
+
+# 3D Viz with `rgl`
+The package `rgl` lets you put the regression plane shaded light gray, and also shows the data points as red squares. You can rotate this plot in 3D also and see how the plane fits. 
+
+To get this plot we had to actually run the regression model first, to get the fitted values to make the plane. It's Figure 2.3 in [the book](#r1).
+
+```{r}
+# rgl fitted plane and points in red
+plot3d(fit.income, which=1 , plane.alpha=0.7, plane.col = "yellow",
+       do_grid=TRUE, grid.steps=10, sub.steps=3, grid.alpha=0.9, grid.col="black",
+       col="red", size=8,
+       main="Figure 2.4")
+```
+
+You can in the preview grab the plot and twist it around, or zoom it.
+
+There's more we can do with the `rgl` package. Here is a graph showing the data points and allowing you to see the residuals.
+
+```{r}
+plot3d(fit.income, which=2, plane.alpha=0.1,
+       do_grid=TRUE, grid.steps=10,sub.steps=3,grid.alpha=0.5,grid.col="gray",
+       col="blue", size=8)
+```
+
+We can show the fitted plane and the predicted or fitted values in green.
+
+```{r}
+plot3d(fit.income, which=3, plane.alpha=0.1, plane.col = "green",
+       do_grid=TRUE, grid.steps=10,sub.steps=3,grid.alpha=0.5,grid.col="gray",
+       col="green", size=6,
+       xlab="", ylab="", zlab="")
+```
+
+We can add the raw data to the predicted plot. We redo the last plot and run another `plot3d` with the parameter setting 'add=TRUE'.
+
+```{r}
+plot3d(fit.income, which=3, plane.alpha=0.1, plane.col = "green",
+       do_grid=TRUE, grid.steps=10,sub.steps=3,grid.alpha=0.5,grid.col="gray",
+       col="green", size=6,
+       xlab="", ylab="", zlab="")
+
+plot3d(Income$Education, Income$Seniority, Income$Income, type="p", size=8, col="red",
+       top=TRUE, add=TRUE,
+       xlab="", ylab="", zlab="")
+
+# # name the axes
+decorate3d(xlab="Years of Education", ylab="Months of Seniority",zlab="Income (000)")
+```
+
+This is not perfect, but it is pretty. Notice how we decorate the axes with names.
+
+The minimal statement you need to make an `rgl` plot is this:
+
+```{r}
+plot3d(fit.income)
+```
+It is a lot nicer with color and care as with most visualizations.
+
+These plots are nice, but they are not `ggplot` compatible; they don't comply with the new grammar of graphics.
+
+# 3D Viz with plotly
+
+Another 3D plotting package is `plotly` which I will demonstrate here. It has some advantages; one is that it is a lot like `ggplot`, another is that it is designed for online user-manipulated images.
+
+```{r warning=FALSE}
+library(plotly)
+P = plot_ly(Income, x = ~Education, y = ~Seniority, z = ~Income)
+library(htmltools)
+tagList(P)
+```
+
+You can maneuver the plot to see that there is actually a regression plane that goes through the data, making the actual data points pretty close to it.
+
+Unlike the package `rgl`, you cannot simply add the plane in the basic plot function. You have to create the grid of `Education` and `Seniority` points, and calculate the fitted income values on it.
+
+Here is how to do it, from [Reference2](#r2). I added some comments and a few displays of the surface data at each stage so you can see what transformation was made.
+
+First set up the axis points for the grid.
+```{r}
+#Graph Resolution (more important for more complex shapes)
+graph_reso <- 0.5 # how far apart the points of the x-y grid are
+
+#Setup Axis for x-y dimensions
+axis_x <- seq(min(Income$Education), max(Income$Education), by = graph_reso)
+axis_y <- seq(min(Income$Seniority), max(Income$Seniority), by = graph_reso)
+```
+
+From the axis points we create the grid points for the drivers and calculate the fitted `Income` values at each grid point.
+
+```{r}
+#Sample points
+# create the x-y grid
+driver_lm_surface <- expand.grid(Education = axis_x, Seniority = axis_y, KEEP.OUT.ATTRS = F)
+# add in the Income values for each point in the x-y grid
+driver_lm_surface$Income <- predict.lm(fit.income, newdata = driver_lm_surface)
+# take a look
+driver_lm_surface
+```
+
+This dataframe shows the x, y and z coordinates for every point in the grid. But it is not compatible with plotting. We use the `pivot_wider` function to modify it. It's called 'shaping' the data. Essentially it turns the data into a matrix where the row names are the `Education`
+ values, the column names are the `Seniority` values, and the cell entries are from `Income`.
+  
+```{r}
+x = driver_lm_surface %>% 
+  pivot_wider(names_from=Education, values_from=Income) %>% 
+  column_to_rownames(var="Seniority") %>%
+  as.matrix
+x %>% glimpse
+driver_lm_surface_shaped = x
+```
+
+We obtain a matrix with 336 rows, 24 columns, and the `Income` values in each cell. The row names are the `Seniority` values on the grid, and the column names are the `Education` values on the grid. 
+
+Now we can plot the shaped surface with the data. I turned off the warnings for this chunk, since the plot functions generate a lot of them for no reason.
+
+```{r warning=FALSE}
+# create the data plot
+income_plot = plot_ly(Income, 
+                     x = ~Education, 
+                     y = ~Seniority, 
+                     z = ~Income,
+                     type = "scatter3d",
+                     mode = "markers")
+# add a layer with the regression fitted plane
+income_plot <- add_trace(p = income_plot,
+                       z = driver_lm_surface_shaped,
+                       x = axis_x,
+                       y = axis_y,
+                       type = "surface", alpha=.5)
+# display the plot
+income_plot
+library(htmltools)
+tagList(income_plot)
+```
+
+Notice the plane is colored to show the value of `Income` at each point. The plot above can be manipulated with the mouse cursor.
+
+# Conclusion
+
+That's all I can show you with 3D plotting, but you can create endless variations.
+
+# References:
+::: {#r1}
+1. [ISLR (2013)] Chapter 2 Statistical Learning, page 17-24.
+
+::: {#r2}
+2. [Add Regression Plane to plot_ly](https://stackoverflow.com/questions/38331198/add-regression-plane-to-3d-scatter-plot-in-plotly)
+

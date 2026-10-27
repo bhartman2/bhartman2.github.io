@@ -1,0 +1,247 @@
+---
+title: Ch 10 tidy Dimension Reduction UMAP
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-09-26 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We use tidy methods to demonstrate the UMAP method for modeling, which may be better at choosing components than PCA. We apply it to the `Boston` housing data. It's related to tSNE method.
+---
+
+# Introduction
+
+# Packages
+```{r}
+library(factoextra) # for clustering analysis and PCA plotting
+library(embed) # for umap 
+library(ISLR2) #package contains the data files
+library(mbadtools, quietly=TRUE) # used to manipulate data and plot
+```
+
+# Data
+We will apply both PCA and UMAP to the Boston house price data from the `ISLR2` package for dimension reduction. 
+
+```{r}
+data(Boston)
+Boston %>% skim
+```
+
+# Validation
+Split the data into training and testing sets.
+```{r}
+set.seed(123)
+boston_split <- initial_split(Boston, prop = 0.8, strata = medv)
+b_train_data <- training(boston_split)
+b_test_data <- testing(boston_split)
+
+```
+
+# Recipe
+Create preprocessing recipes. 
+
+Uniform Manifold Approximation and Projection (UMAP) is a nonlinear dimension reduction technique. It's an alternative to PCA. tSNE is one form of UMAP transformation. UMAP is built to be more general and to be compliant with `tidy` methods. See [the original paper](#r1) for more information about these procedures.
+
+UMAP finds local, low-dimensional representations of the data. It can be run unsupervised or supervised with different types of outcome data (e.g. numeric, factor, etc).
+
+Documentation for UMAP procedures in the `embed` package can be found at [Hvitfeldt (2026)](#r2).
+
+The argument `num_comp` (default no of data columns) controls the number of components that will be retained (the original variables that are used to derive the components are removed from the data). The new components will have names that begin with prefix UMAP and a sequence of numbers. 
+
+```{r}
+b_basic_recipe <- recipe(medv ~ ., data = b_train_data) %>% 
+  step_normalize(all_numeric_predictors())
+
+b_pca_recipe = b_basic_recipe %>%
+  # update_role(player, new_role = "ID") %>% # This prevents regressing on the name
+  step_pca(all_numeric_predictors()) # default is 5 components
+
+library(embed)
+b_umap_recipe = b_basic_recipe %>% 
+  step_umap(all_numeric_predictors(), num_comp = 5)
+```
+
+# Prep and Bake
+For PCA the default is 5 PCs
+```{r}
+b_pca_prep = prep(b_pca_recipe)
+b_pca_bake = bake(b_pca_prep, new_data=Boston)
+b_pca_bake %>% head
+```
+For UMAP the number of columns matches the number of drivers in the dataset, plus the unchanged target column `medv`. 
+```{r}
+b_umap_prep = prep(b_umap_recipe)
+b_umap_bake = bake(b_umap_prep, new_data=Boston)
+b_umap_bake %>% head
+```
+
+# Model Spec
+We write a linear model spec.
+```{r}
+# 1. Write the model specification
+lm_spec <- linear_reg() %>% 
+  set_engine("lm") %>% 
+  set_mode("regression")
+```
+
+# Workflows
+```{r}
+# 2. Create the PCA workflow
+pca_workflow <- workflow() %>% 
+  add_recipe(b_pca_recipe) %>% 
+  add_model(lm_spec)
+
+# 3. Create the UMAP workflow
+umap_workflow <- workflow() %>% 
+  add_recipe(b_umap_recipe) %>% 
+  add_model(lm_spec)
+```
+
+# Train
+```{r}
+b_pca_fit = fit(pca_workflow, data = b_train_data)
+b_umap_fit = fit(umap_workflow, data = b_train_data)
+```
+
+# Evaluate on Test
+We will evaluate using rmse.
+```{r}
+# augment the data to predict
+b_pca_aug = b_pca_fit %>% augment(new_data=b_test_data)
+b_umap_aug = b_umap_fit %>% augment(new_data=b_test_data)
+# calculate metrics
+bind_rows(
+b_pca_aug %>% metrics(truth=medv, estimate=.pred) %>% mutate(model="PCA", .before=1),
+b_umap_aug %>% metrics(truth=medv, estimate=.pred) %>% mutate(model="UMAP", .before=1)
+) %>% filter(.metric == "rmse")
+```
+
+The PCA model did better on the test data. 
+
+# Conclusion
+In this analysis, we explored and compared two dimension reduction techniques—-- Principal Component Analysis (PCA) and Uniform Manifold Approximation and Projection (UMAP)--- within a tidymodels workflow to predict Boston housing prices (medv).
+
+Both preprocessing recipes successfully compressed the original numeric predictors into exactly 5 components, ensuring a direct, apples-to-apples comparison of the two methods. By integrating these transformed features into standard linear regression workflows, we evaluated their predictive capabilities on a held-out test set.   
+
+The results demonstrate that the PCA-based model outperformed the UMAP-based model, achieving a lower Root Mean Square Error (RMSE) of 5.470 compared to UMAP's RMSE of 7.916. This indicates that, for this specific dataset and linear modeling approach, the orthogonal linear transformations used by PCA were more effective at capturing the most relevant variance for predicting median home values than the non-linear, local manifold structure extracted by UMAP.
+
+# References
+:::{#r1}
+McInnes, L., Healy, J. and Melville, J. (2020) UMAP:Uniform Manifold Approximation and Projection for Dimension Reduction. (https://arxiv.org/pdf/1802.03426)
+
+:::{r2}
+Hvitfeldt E, Kuhn M (2026). embed: Extra Recipes for Encoding Predictors. R package version 1.2.2, (https://embed.tidymodels.org). 
+
+:::{#r3}
+McInnes, L. (2018). How UMAP works. umap 0.5.8 documentation.  (https://umap-learn.readthedocs.io/en/latest/how_umap_works.html)
+
+:::
+
+# Reviews
+
+### Gemini Review
+Here are a few constructive critiques of the methodology and structure in the document:
+
+- Model Compatibility (Non-linear Features + Linear Model): The most significant methodological flaw is pairing UMAP with a simple linear regression model (`linear_reg() %>% set_engine("lm")`). UMAP is a non-linear algorithm designed to capture complex, local manifold structures. However, a standard linear regression can only draw straight lines through those new components. To truly test UMAP's value, it should ideally be paired with a non-linear model like a Random Forest or XGBoost that can exploit complex spatial groupings.
+- Arbitrary Hyperparameter Selection: The recipe hardcodes `num_comp` = 5 for both PCA and UMAP. In a rigorous machine learning workflow, the optimal number of components should be determined through hyperparameter tuning. Additionally, UMAP is highly sensitive to parameters like neighbors (which controls the balance between local and global structure) and min_dist (how tightly packed points are). Leaving these at their defaults likely handicapped UMAP's performance.
+- Lack of Cross-Validation: The evaluation relies on a single 80/20 train/test split. Relying on one test set to compare models can be highly variable, especially on a small dataset like Boston Housing (only 506 rows total). Using $k$-fold cross-validation on the training set using `vfold_cv()`` and `fit_resamples()` would provide a much more robust and reliable estimate of how these reduction techniques actually compare.
+- Abstract vs. Results Disconnect: The abstract introduces UMAP by stating it "may be better at choosing components than PCA." However, the final test metrics show PCA winning by a significant margin (RMSE 5.47 vs 7.92). The document would benefit from a discussion section explaining why PCA won here (e.g., the predictive relationships in the Boston dataset are largely linear, or the `lm` model failed to capitalize on UMAP's non-linear transformations).Overall, the code is structurally clean and perfectly demonstrates how to implement the `tidymodels` syntax for these steps, but the statistical pipeline itself leaves some performance on the table.
+
+### Copilot Review
+
+⚠️ _Areas for Improvement_
+
+1. Conceptual framing of UMAP
+UMAP is not “better at choosing components than PCA.” UMAP is:
+
+- nonlinear
+- stochastic
+- focused on preserving local structure
+- not designed for linear modeling
+- not guaranteed to produce components interpretable as variance‑maximizing directions
+
+Your chapter would benefit from clarifying that UMAP is not a drop‑in replacement for PCA in regression contexts. It is primarily a visualization and clustering tool.
+
+2. Missing discussion of hyperparameters
+UMAP has many tunable parameters:
+
+- n_neighbors
+- min_dist
+- metric
+- learn_rate
+- num_comp
+
+You only vary num_comp.
+This makes the comparison incomplete because UMAP performance is highly sensitive to these parameters.
+
+3. Interpretation of results
+You conclude that PCA “did better,” which is correct numerically, but the deeper reason is important:
+
+Linear regression assumes linear relationships. PCA produces linear components.
+UMAP produces nonlinear components that do not align with linear modeling assumptions. This is the key insight your chapter should highlight.
+
+4. Lack of visualization
+UMAP is primarily used for visualization.
+Readers will expect:
+
+- a 2D UMAP plot
+- a PCA biplot
+- cluster structure comparisons
+
+Adding these would make the chapter more engaging and informative.
+
+5. Missing cross‑validation
+You evaluate on a single test split. Given UMAP’s stochastic nature, you should use:
+
+- resampling (vfold_cv)
+- control_workflow() with save_pred = TRUE
+- multiple UMAP runs or fixed seeds
+
+This would stabilize the comparison.
+
+6. Minor clarity issues
+
+The statement “tSNE is one form of UMAP transformation” is not correct.
+t‑SNE and UMAP are distinct algorithms with different mathematical foundations.
+
+The phrase “UMAP is built to be more general and compliant with tidy methods” is misleading. UMAP is not designed for `tidymodels`; the `embed` package provides the integration.
+
+🧪 _Statistical Rigor Review_
+
+Modeling choice
+
+Linear regression is not the best model to pair with UMAP.
+A nonlinear model (e.g., random forest) would be a more appropriate comparison.
+
+RMSE comparison
+
+Your RMSE values are reasonable for Boston housing. But you should report:
+
+- MAE
+- R²
+- residual diagnostics
+
+Given your interest in model adequacy, adding residual plots would strengthen the chapter.
+
+Stochasticity
+
+UMAP is stochastic. You should:
+
+- fix a seed inside the recipe
+- or run multiple UMAP fits and average performance
+
+📌 _Summary of Key Recommendations_
+
+- Clarify conceptual differences between PCA and UMAP
+- Correct the t‑SNE/UMAP relationship
+- Add hyperparameter tuning
+- Add visualizations
+- Use cross‑validation
+- Strengthen interpretation of results
+- Expand abstract and introduction
+- Add discussion of model‑algorithm compatibility

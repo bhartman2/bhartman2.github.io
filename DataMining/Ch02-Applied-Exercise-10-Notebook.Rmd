@@ -1,0 +1,347 @@
+---
+title: Ch02 Applied Exercise 10 Notebook
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-31 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We analyze the Applied Exercise 10 from Chapter 2 of [ISLR (2013)](#r1), in an R Notebook using modern tidyverse methods.
+---
+
+
+# Introduction
+We will work Ch02 Applied Exercise 10 in this R Notebook. It is found in [ISLR (2013)](#r1) page 56.
+
+# Problem Statement
+Here is a statement of the problem, taken from [ISLR (2013)](#r1) page 56.
+
+>10. This exercise involves the Boston housing data set.
+(a) To begin, load in the Boston data set. The Boston data set is part of the MASS (ed.note now ISLR2) package in R. Now the data set is contained in the object Boston. Read about the data set: How many rows are in this data set? How many columns? What do the rows and columns represent?
+(b) Make some pairwise scatterplots of the drivers (columns) in this dataset. Describe your findings.
+(c) Are any of the drivers associated with per capita crime rate? If so,
+ explain the relationship.
+(d) Do any of the suburbs of Boston appear to have particularly high crime rates? Tax rates? Pupil-teacher ratios? Comment on the range of each driver.
+(e) How many of the suburbs in this data set bound the Charles river?
+(f) What is the median pupil-teacher ratio among the towns in this
+data set?
+(g) Which suburb of Boston has lowest median value of owner-occupied homes?
+What are the values of the other predictors for that suburb, and how do those
+ values compare to the overall ranges for those predictors? Comment on your
+findings.
+(h) In this data set, how many of the suburbs average more than seven rooms
+per dwelling? More than eight rooms per dwelling? Comment on the suburbs that
+average more than eight rooms per dwelling.
+
+# Packages
+We make all the `mbadtools` required packages available, and also load the `ISLR2` package for data.
+
+```{r}
+library(ISLR2) # some data files
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+# load github packages
+library(mbadtools)
+``` 
+
+# Data (a)
+The Boston data set is in the `ISLR2` package.
+```{r}
+data(Boston)
+Boston
+```
+
+There are 14 columns and 506 rows. What do the columns and rows represent? 
+Show the help page for the Boston data set in the Help tab if you are running the notebook interactively.
+```{r}
+help("Boston", package="ISLR2")
+```
+
+# Data Description
+What do the data look like?
+```{r}
+Boston %>% skim
+```
+
+There are no missing rows, and all data are numeric except that `chas` is probably a 0-1 variable.
+To check that we can do  this:
+```{r}
+Boston %>% distinct(chas)
+```
+
+Yes, there are only two values: on the Charles River or not.
+
+# Part (b)
+Make some pairwise scatterplots of the predictors (columns) in this data
+ set. Describe your findings. We will use a pairs plot. There are lots of variables so it's complex.
+```{r fig.width=12}
+Boston %>% ggpairs(progress=F)
+```
+ 
+Certain columns do not show signs of lots of correlation. Pick them out by eye.
+
+```{r}
+several=Boston[,c(13,1,12,7,11)]
+ggpairs(several, progress=F)
+```
+
+We could also do it by looking at the correlation coefficients of medv with some chosen columns that we will use in this analysis.
+
+```{r}
+several %>% cor() %>% round(digits=2)
+```
+
+```{r}
+two=Boston %>% select(medv, lstat)
+ggpairs(two, progress=F)
+```
+
+`medv` seems to be negatively related to `lstat`. These are the median value of owner-occupied homes in each suburb, and the lower status of the population in percent. The correlation is -.738 and the graph shows the trend clearly. It looks kind of like a curved descent. 
+
+# Research Hypothesis
+ - Hypothesis: As `lstat` increases, `medv` decreases, on average.
+ 
+This hypothesis makes sense from a business perspective, since `medv` is the median home value in a town, and `lstat` is the percent of the population that is of lower status.
+ 
+# Part (c)
+Are any of the predictors associated with per capita crime rate? If so, explain the relationship. Column 1 is `crim`, the crime rate. We can easily look at the correlations with the first column.
+```{r}
+Boston %>% cor %>% as.data.frame %>%
+  select(crim) %>% 
+  transmute(Correlation=crim)
+```
+
+`crim` does not seem to be very related to any one variable, though the correlation is highest positive with `rad, tax,lstat, nox` and negative with `medv`.
+
+# Part (d)
+
+Do any of the suburbs of Boston appear to have particularly high crime rates?
+Tax rates? Pupil-teacher ratios? Comment on the range of each predictor.
+
+We will define >=mean to be excessive crime.
+```{r}
+Boston %>% skim %>% select(skim_variable, numeric.mean) %>% 
+  as_tibble %>% rename(Mean=numeric.mean)
+```
+
+The mean of `crim` is about 3.61. Count how many rows have `crim`above this number.
+
+```{r}
+# tidyverse way
+Boston %>% filter(crim >= mean(crim)) %>% count
+```
+
+128 communities have `crim` above the mean. That is out of `r nrow(Boston)` communities.
+
+Let's look at all of the relevant columns.
+```{r}
+Boston %>% filter(crim>=mean(crim) ) %>% count
+Boston %>% filter(tax>=mean(tax) ) %>% count
+Boston %>% filter(ptratio>=mean(ptratio) ) %>% count
+```
+
+There are 128, 168, and 292 above the means of `crim, tax, ptratio` respectively. Most by far have low `crim` rates.
+
+We can also see this using histograms. Start with `crim`. The mean will be shown as a blue vertical dashed line.  We will use bars that have red fill and a black outline ('color' parameter), and we will fade the red color a bit (parameter 'alpha'), for readability. Picking the number of bins is an analyst decision.
+
+```{r}
+gpcr = ggplot(Boston) + 
+  geom_histogram(aes(crim), fill="red", color="black", alpha=0.5, bins=20) +
+  geom_vline(aes(xintercept=mean(crim)), linetype="dashed", color="blue")
+gpcr
+```
+
+Most suburbs have crime rates below the mean, bout one has a rate up around 90.
+
+```{r}
+gptx = ggplot(Boston) + 
+  geom_histogram(aes(tax), fill="red", color="black", alpha=0.5, bins=20)+
+  geom_vline(aes(xintercept=mean(tax)), linetype="dashed", color="blue")
+gptx
+```
+Taxes are mostly below the mean, but there are two big ones.
+
+```{r}
+gpptr = ggplot(Boston) + 
+  geom_histogram(aes(ptratio), fill="red", color="black", alpha=0.5, bins=20)+
+  geom_vline(aes(xintercept=mean(ptratio)), linetype="dashed", color="blue")
+gpptr
+```
+
+For `ptratio`, most communities are above the mean, not as desirable, but some are as low as 12 or 13.  Those pupil-teacher ratios are very good.
+
+All plots together:
+```{r}
+(gpcr | gptx) / gpptr
+```
+
+
+# Part (e)
+
+How many of the suburbs in this data set bound the Charles river?
+```{r}
+Boston %>% group_by(chas) %>% summarize("Charles" = n())
+```
+
+There are 35 of them.
+
+# Part (f)
+What is the median pupil-teacher ratio among the towns in this data set? I will use the `quantile` function here and set the quantile I want to .50, which is the median. By changing the number, I could get any quantile I want. The .50 quantile is the median, in statistics.
+
+```{r}
+Boston %>% summarize( "Median ptratio" = quantile(ptratio, .50) )
+```
+
+The median is given above. which suburbs have `ptratio` above the mean?
+
+```{r}
+Boston %>% mutate(r = row_number(), .before=1) %>% 
+  select(r, ptratio) %>% 
+  filter(ptratio > mean(ptratio)) %>%
+  arrange(desc(ptratio))
+
+Boston %>% mutate(r = row_number(), .before=1) %>%
+    select(r, ptratio) %>% 
+    filter (between(ptratio, median(ptratio)-.05, median(ptratio)+.045) )
+```
+
+Rows 81 through 84 have `ptratio` near the median, defined as within .05 below and .045 above the median.
+
+# Part (g) 
+
+Which suburb of Boston has lowest median value of owner-occupied homes (`medv`)? What
+ are the values of the other predictors for that suburb, and how do those
+ values compare to the overall ranges for those predictors? Comment on your
+ findings.
+ 
+```{r}
+Boston %>% mutate (r = row_number(), .before=1) %>%
+  filter( medv == min(medv) )
+```
+
+Look at the last column on the right in the display. `r` holds the row number. Towns 399 and 406 have the lowest values. The other drivers are given in the results.
+ 
+# Part (h)
+
+In this data set, how many of the suburbs average more than seven rooms per
+dwelling? More than eight rooms per dwelling? Comment on the suburbs that
+average more than eight rooms per dwelling.
+```{r}
+Boston %>% mutate (r = row_number(), .before=1) %>% filter( rm > 7 ) %>%
+  summarize("rm>7"=n())
+Boston %>% mutate (r = row_number(), .before=1) %>% filter( rm > 8 ) %>%
+  summarize("rm>8"=n())
+
+```
+There are 64 communities with the average number of rooms greater than 7. There are 13 with `rm` bigger than 8.
+
+```{r}
+Boston %>% mutate (r = row_number(), .before=1) %>% 
+  filter( rm > 8 ) %>% skim %>% filter(skim_variable %in% c("rm","medv")) 
+Boston %>% mutate (r = row_number(), .before=1) %>% 
+  filter( rm <= 8 ) %>% skim %>% filter(skim_variable %in% c("rm","medv"))
+```
+
+These two tables tell us how the summary parameters of the two groups, less than or equal to 8 or greater than 8, vary. Just look at `medv`. The median value for the bigger than 8's is 44.2, whereas for 8 and under it is 21.96. More than double!!
+
+Let's try to make boxplots of various drivers, `crim, ptratio, lstat, medv` for the over 8 rooms and the 8 or less rooms. 
+
+First we make an object `x` by adding two more columns to Boston; namely the row or community number `n`, and an indicator that is 1 for the over-8 communities, `rmover8`.
+
+```{r}
+x = Boston %>% mutate (r = row_number(), .before=1) %>% 
+  mutate(rmover8 = 
+           case_when(
+             rm>8 ~ 1,
+             .default=0
+             )
+         )
+```
+
+Next we display boxplots of the selected drivers for the two groups.
+
+```{r}
+pc=ggplot(x) + 
+  geom_boxplot(aes(as.factor(rmover8),crim),
+               fill="red", color="black", varwidth=TRUE) +
+  labs(title="Boxplot of Boston suburbs crim",
+       x="rm over 8",
+       y="Value of crim")
+pc
+```
+
+Big house cities don't have high `crim`!
+
+Try the same for `ptratio`
+
+```{r}
+pp=ggplot(x) + 
+  geom_boxplot(aes(as.factor(rmover8),ptratio),
+               fill="red", color="black", varwidth=TRUE) +
+  labs(title="Boxplot of Boston suburbs ptratio",
+       x="rm over 8",
+       y="Value of ptratio")
+pp
+```
+
+The over-8 room communities have low parent to teacher ratio `ptratio`. They will get a better education (possibly).
+
+Try `lstat`.
+
+
+```{r}
+pl=ggplot(x) + 
+  geom_boxplot(aes(as.factor(rmover8),lstat),
+               fill="red", color="black", varwidth=TRUE) +
+  labs(title="Boxplot of Boston suburbs lstat",
+       x="rm over 8",
+       y="Value of lstat")
+pl
+```
+
+They have lower `lstat`.
+
+Try `medv`.  We would expect that large house communities would have higher median value.
+
+```{r}
+pm=ggplot(x) + 
+  geom_boxplot(aes(as.factor(rmover8),medv),
+               fill="red", color="black", varwidth=TRUE) +
+  labs(title="Boxplot of Boston suburbs medv",
+       x="rm over 8",
+       y="Value of medv")
+pm
+```
+They have much higher `medv`.
+
+# Conclusion
+
+We have performed the analyses suggested in Applied Exercise 10 and learned a lot about the Boston dataset.
+
+In general, suburbs where the houses are on average bigger, defined here as over 8 rooms, have lower `crim`, higher `ptratio`, lower `lstat`, and higher `medv`.
+
+While this might be expected, the boxplots show us specifically the magnitude of these disparities.  If we put the four plots together into one graphic, we can see the comparison.
+
+```{r}
+combined = (pm + pc) / (pl + pp)
+combined + 
+  plot_annotation(theme = theme(
+              plot.background = element_rect(color = "black", linewidth = 2)
+              )
+    )
+```
+
+This graphic is very convincing.
+
+# References
+::: {#r1}
+1. ISLR (2013) Applied Exercise 9, Chapter 2, page 57.
+
+
+
+

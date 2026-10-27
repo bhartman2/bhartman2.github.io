@@ -1,0 +1,208 @@
+---
+title: Ch02 Applied Exercise 08 Notebook
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-31 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We analyze the Applied Exercise 8 from Chapter 2 of [ISLR (2013)](#r1), in an R Notebook.
+---
+
+# Introduction
+In this notebook we solve Applied Exercise 8 from the [textbook](#r1). We'll produce an HTML Preview output for submission using modern tidyverse methods.
+
+# Problem
+Here is a statement of the problem.
+
+> We use the College dataset. Before reading the data into R, it can be viewed in Excel or a text editor.
+
+> (a) Use the read.csv() function to read the data into R. Call the loaded data college. Make sure that you have the directory set to the correct location for the data.
+
+Get the data from the ISLR2 package!
+
+> (b) Look at the data [by yelling its name].You should notice that the first column is just the name of each university. We don’t really want R to treat this as data. However, it may be handy to have these names for later.
+
+Use some appropriate functions from tidyverse.
+
+> (c)
+> i. Use the summary() or skim() function to produce a numerical summary of the variables in the data set.
+> ii. Use the ggpairs() function to produce a scatterplot matrix of the first ten ccolumns or variables of the data. Recall that you can reference the first ten columns of a matrix A using A[,1:10], [or use select]
+> iii. Use the [ggplot()] function to produce side-by-side boxplots of Outstate versus Private.
+
+Do some coding and adding to the data in a tidyverse way.
+
+> iv. Create a new qualitative variable, called Elite, by binning the Top10perc variable. We are going to divide universities into two groups based on whether or not the proportion of students coming from the top 10% of their high school classes exceeds 50%. Use the summary() or skim() function to see how many elite universities there are. Now use the ggplot() function to produce side-by-side boxplots of Outstate versus Elite.
+
+Do some plotting.
+
+> v. Produce some histograms with differing numbers of bins for a few of the quantitative variables. [Use ggplot()]
+
+Explore further with plots and tables.
+
+> vi. Continue exploring the data, and provide a brief summary of what you discover.
+
+# Packages
+First we want to make all the packages for the course available, using `mbadtools`. 
+```{r}
+library(ISLR2) # some data files
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages())) pak::pak("bhartman2/mbadtools")
+# load github packages
+library(mbadtools)
+``` 
+
+# Data
+The College data should be available right now, since it is from `ISLR2` package.
+```{r}
+data(College)
+College
+```
+
+Notice the rows have names, which are the college names. That is allowed in a data frame object.
+
+# Data Description
+```{r}
+College %>% glimpse()
+College %>% summary()
+```
+
+Names of colleges are in the row names. I see no missing data. The first variable Private is a character variable with only values in {Yes, No}.
+
+Using `skim` is a better way to summarize the data.
+```{r}
+College %>% skim
+```
+
+There are 777 rows (colleges) and 18 columns, 1 a factor and 17 numeric. The factor `Private` has 2 levels, Yes and No. The other columns are numeric, with some having a lot of distinct values, such as `Apps` (applications) and `Accept` (acceptances).
+
+# Data Wrangling
+
+Our book suggests we make the colleges in the row names into a column in the data. Here's one way to do this. The `rownames_to_column()` function from `tidyverse` is key.
+```{r}
+College2 = rownames_to_column(College, var="College.Name")
+College2 %>% skim( where(is.character))
+```
+But we won't use this `College2`dataset, because that first column has too many distinct values. We can still use the row names to find out which college is which.
+
+# (c) Part i
+`skim` lets us find NAs if any. Are there any NAs?
+```{r}
+College %>% skim
+```
+
+The n_missing column tells us how many records have missing data in that column. Check for columns with NAs?
+```{r}
+College %>% skim() %>% filter(n_missing > 0)
+```
+No!
+
+# Part ii
+A pairs plot helps see relations between columns. It's hard to see for 18 columns; we will do 1-6, 7-12, and 13-18. We set message to FALSE in the chunk when some messages are produced that we don't want in our output.
+
+```{r message=FALSE, fig.width=12, fig.height=10}
+College %>% select(1:6) %>% ggpairs() # uses the GGally package
+```
+
+Notice how it shows you the correlation coefficients, and for the Yes-No column `Private`, it shows histograms and boxplots. For instance, we see that `Accept` and `Enroll` are clearly related.
+
+```{r fig.width=12, fig.height=10}
+College %>% select(7:12) %>% ggpairs(progress=F) # uses the GGally package
+```
+
+Here we see some relation between `Outstate` and `RoomBoard`, the correlation is .654.
+
+```{r fig.width=12, fig.height=10}
+College %>% select(13:18) %>% ggpairs(progress=F) # uses the GGally package
+```
+
+Here we can see `Terminal` and `PhD` are closely related with correlation of .85. A `PhD` is a terminal degree in education parlance.
+
+# Part iii
+Plot a boxplot of `Private` vs `Outstate`, using `ggplot`.
+
+```{r}
+ggplot(College) +
+  geom_boxplot(aes(Private, Outstate), color="red", varwidth=TRUE)
+```
+
+Axis labels are done for you. It looks like Private colleges have higher out-of-state tuition, on average. The boxplot shows us how the colleges are clustered. Interpretation comes from this quote taken from the documentation for `geom_boxplot`.
+
+>The lower and upper hinges correspond to the first and third quartiles (the 25th and 75th percentiles). This differs slightly from the method used by the boxplot() function, and may be apparent with small samples. See boxplot.stats() for for more information on how hinge positions are calculated for boxplot().
+
+>The upper whisker extends from the hinge to the largest value no further than 1.5 * IQR from the hinge (where IQR is the inter-quartile range, or distance between the first and third quartiles). The lower whisker extends from the hinge to the smallest value at most 1.5 * IQR of the hinge. Data beyond the end of the whiskers are called "outlying" points and are plotted individually.
+
+# Part iv
+Create a new qualitative variable `Elite` (Yes or No).  
+The new tidyverse way to add a column uses the `mutate()` function and the `case_when` function (a version of if-then-else). It allows you to add new columns by computation.
+
+```{r}
+College = College %>% 
+  mutate(Elite = 
+           as.factor( 
+              case_when(
+                Top10perc >50 ~ "Yes",
+                .default="No") 
+            ) 
+          )
+
+College %>% skim(Elite)
+```
+
+Reading the code, we can see that the new categorical column `Elite` is computed from the column `Top10perc.`  If `Top10perc` is over 50, then `Elite` is given the character value "Yes"; if not, it is given the value "No". Then the character variable is turned into a factor, the customary way in R of setting up character variables with a small number of values as a 0-1 binary variable.
+
+There are 78 Elite schools and 699 non-Elite schools. 
+
+Make boxplots side by side of `Outstate` vs `Elite`.
+
+```{r}
+College %>% ggplot() +
+  geom_boxplot(aes(Elite, Outstate), color="red", varwidth=TRUE)
+```
+
+Elite schools have a lot bigger out-of-state tuition.
+
+# Part v
+We make some histograms of `Outstate`, `Apps`, `Grad.Rate`, and `Expend`. We store them in `ggplot` objects, `p1, p2, p3, p4`. We can plot each one by simply stating it.
+```{r}
+# ggplot way
+p1 =  College %>% ggplot() + geom_histogram(aes(Outstate), color="black", bins=15, fill="red")
+p2 =  College %>% ggplot() + geom_histogram(aes(Apps), color="black", bins=15, fill="red")
+p3 =  College %>% ggplot() + geom_histogram(aes(Grad.Rate), color="black", bins=15, fill="red")
+p4 =  College %>% ggplot() + geom_histogram(aes(Expend), color="black", bins=15, fill="red") 
+p1
+p2
+p3
+p4
+```
+
+Or we can put the plots in an array, using `patchwork`.
+
+```{r}
+(p1 | p2)/ (p3 | p4)
+```
+
+That is perhaps more convenient as a visualization. `Expend` is skewed with a peak to the left, and `Apps` even worse.  `Grad.Rate` appears to be almost normally distributed, around a mean of 55%, and `Outstate` is skewed more to the lower values.
+
+# Part vi
+
+I will just do one thing. 
+```{r fig.height=12, fig.width=12}
+College %>% select(Books,Personal,Expend,Terminal,Outstate) %>% 
+  ggpairs(progress=F)
+```
+
+`Terminal` and `Outstate` seem to have some correlation; `Expend` and `Outstate` are definitely correlated.
+
+# Conclusion
+We have solved the problem set.  And we have learned a few things about how to manage data and look for meaning in it.
+
+# References
+::: {#r1}
+1. ISLR (2013) Applied Exercise 8, Chapter 2, page 54-55. 
+

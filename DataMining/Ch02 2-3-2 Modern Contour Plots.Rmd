@@ -1,0 +1,135 @@
+---
+title: Ch02 2-3-2 Modern Contour Plots
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-14 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We follow Section 2.3.2 of [the book](#r1) for contour plots using new `ggplot` methods.
+---
+
+# Introduction
+We follow [ISLR (2013)](#r1) pages 46 and 47 for contouring using `ggplot` and `tidyverse` concepts.
+
+# Packages
+As usual, we have some standard packages. 
+```{r}
+library(ISLR2) # some data files
+library(mbadtools)
+```
+
+# Data
+Construct the data with `seq`.
+```{r}
+x=seq(-pi, pi, length=50)
+y=x
+```
+
+# Data for Contouring
+```{r}
+f = outer(x, y, function (x,y)cos(y)/(1+x^2))
+```
+
+# Old Contouring
+```{r}
+contour (x, y, f)
+contour (x, y, f, nlevels = 45, add=TRUE)
+fa=(f-t(f))/2
+contour (x, y, fa, nlevels = 15)
+```
+# Modern contouring
+
+The modern way:
+```{r}
+# Put data on a grid
+grid <- expand.grid(x = x, y = y)
+
+# A z value for each (x,y)
+grid$z <- with(grid, cos(y)/(1+x^2))
+
+# Plot contours
+ggplot(grid, aes(x, y, z = z)) +
+  geom_contour(bins=45) +
+  geom_contour_filled()
+```
+
+Make a ggplot.
+```{r}
+#labeling contours
+library(metR) # for labeling contours instead of legend
+# ggplot
+ggplot(grid, aes(x, y, z = z)) +
+  geom_contour(bins=45) +
+  metR::geom_text_contour(breaks = c(-1, -0.5, 0, 0.5, 1))
+```
+
+```{r}
+# transformed data
+f1 = as.matrix(f)
+f2 = t(f1)
+grid$za = (as.vector(f1 - f2))/2
+
+# Plot contours
+ggplot(grid, aes(x, y, z = za)) +
+  geom_contour(bins=45) +
+  geom_contour_filled()
+
+#labeling contours
+library(metR) # for labeling contours instead of legend
+ggplot(grid, aes(x, y, z = za)) +
+  geom_contour(bins=45) +
+  metR::geom_text_contour(breaks = c(-0.5, 0, 0.5))
+```
+
+# Old Heatmap
+```{r}
+image(x,y, fa)
+
+persp(x,y,fa)
+
+persp(x,y,fa, theta=30)
+
+persp(x,y,fa, theta=30,phi=20)
+
+persp(x,y,fa, theta=30,phi=70)
+
+persp(x,y,fa, theta=30,phi=40)
+
+```
+
+# Modern Heatmap
+
+```{r}
+ggplot(grid, aes(x, y, z = za)) +
+  geom_contour(bins=45) +
+  geom_contour_filled()
+
+ggplot(grid, aes(x, y, fill = za)) +
+  geom_raster(interpolate = TRUE) +
+  geom_contour(aes(z = za), color = "white") +
+  scale_fill_viridis_c() +
+  coord_equal()
+```
+
+# Using `plotly` for surfaces
+Here is how to imitate `persp`. There's no need for rotation parameters because you can drag the view around.
+```{r}
+library(plotly)
+
+plot_ly(x = ~x, y = ~y, z = ~as.matrix(fa)) %>% add_surface()
+```
+
+# Conclusion
+We found out how to draw contour plots, heat maps, and surfaces the modern tidyverse way.
+
+# References
+::: {#r1}
+1. ISLR (2013), Chapter 2 Statistical Learning, page 46-47.
+
+

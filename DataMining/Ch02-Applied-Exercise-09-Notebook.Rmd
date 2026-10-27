@@ -1,0 +1,201 @@
+---
+title: Ch02 Applied Exercise 09 Notebook
+author:
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-31 Revised `r lubridate::now() %>% format_ISO8601()`
+output:
+  html_notebook:
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We analyze the Applied Exercise 9 from Chapter 2 of [ISLR (2013)](#r1), in an R Notebook using modern tidyverse methods.
+---
+
+# Introduction
+
+We will work Ch02 Applied Exercise 09 in this R Notebook. It is found in [our text](#r1) page 56. We use modern tidyverse methods.
+
+# Packages
+We want to make all the packages for the course available, using `mbadtools`. We also load the ISLR2 package for data.
+```{r}
+library(ISLR2) # some data files
+# install mbadtools from github
+if(!("mbadtools" %in% installed.packages()))
+  pak::pak("bhartman2/mbadtools")
+# load github packages
+library(mbadtools)
+``` 
+
+# Problem
+Here is a statement of the problem, taken from [the text](#r1).
+
+>9. This exercise involves the Auto data set studied in the lab. Make sure that the missing values have been removed from the data.
+>(a) Which of the predictors are quantitative, and which are qualitative?
+>(b) What is the range of each quantitative predictor? You can answer this using the range() function.
+>(c) What is the mean and standard deviation of each quantitative predictor?
+>(d) Now remove the 10th through 85th observations. What is the range, mean, and standard deviation of each predictor in the subset of the data that remains?
+>(e) Using the full data set, investigate the predictors graphically, using scatterplots or other tools of your choice. Create some plots highlighting the relationships among the predictors. Comment on your findings.
+>(f) Suppose that we wish to predict gas mileage (mpg) on the basis of the other variables. Do your plots suggest that any of the other variables might be useful in predicting mpg? Justify your answer.
+
+# Data
+We use the Auto dataset, and it is in the package `ISLR2`. Its documentation can be seen like this interactively, but not in the Preview.
+```{r}
+?Auto
+```
+
+Enable the Auto data to the notebook. 
+
+```{r}
+data(Auto)
+Auto
+```
+
+# Data Wrangling
+First look at the nature of the data.
+```{r}
+Auto %>% skim
+```
+
+We see there is a multitude of text names (301) in the `name` column, and those will not be convenient for viewing. 
+
+Let's check for missing data, and then NAs, in the rows. There aren't any!  If there were, the R code would list the row numbers. 
+```{r}
+Auto %>% skim %>% filter(n_missing > 0)
+```
+
+# (a)
+Which of the predictors are quantitative, and which are qualitative?
+```{r}
+Auto %>% glimpse
+```
+
+The `name` column is listed as a factor _<fct>_, because it is character data.  R has automatically set it up as a factor, which assigns consecutive numbers to the different levels (different text values).  That is for computation such as regression and other modeling.
+
+The other columns are all numeric, though some, like `cylinders` or `origin` may have only a few values. Let's investigate that more on some of the suspect columns.
+```{r}
+Auto %>% distinct(cylinders)
+Auto %>% distinct(year)
+Auto %>% distinct(origin)
+```
+
+These columns should not be used for computation, because they are really codes. `year` kind of goes like time.  `origin` is just a code. `cylinders` represents something, but it is more a classification than a numeric range. `cylinders` ranges from 4 to 8, which makes sense for autos.
+
+Create an object to hold the names of the quantitative variables. Either form works.
+```{r}
+quants=c("mpg","displacement","horsepower","weight","acceleration")
+# or
+quants=names(Auto)[c(1,3:6)]
+quants
+```
+
+# (b)
+Get the ranges of the quantitative variables. In a skim output it is the columns p0 and p100
+```{r}
+Auto %>% select (all_of(quants)) %>% skim %>% 
+  select(skim_variable, numeric.p0, numeric.p100) %>%
+  mutate(Range=numeric.p100-numeric.p0)
+```
+
+The old way would be to use the `range` function, but that is not as pretty.
+```{r}
+Auto %>% select (all_of(quants)) %>% sapply(range) %>% diff
+```
+
+# (c)
+What are the mean and standard deviation of the quantitative variables? 
+
+```{r}
+Auto %>% select ( all_of(quants) ) %>% skim %>% 
+  select(skim_variable, numeric.mean, numeric.sd) %>% as_tibble %>%
+  rename(Mean=numeric.mean, `Std Dev`=numeric.sd)
+```
+
+What are some other interesting measures for the quants?
+```{r}
+# max and min
+Auto %>% select (all_of(quants) ) %>% skim() %>% 
+  select(skim_variable, numeric.p0:numeric.p100) %>% # all quantiles
+  as_tibble %>% rename_with(~ str_remove(.x, "numeric.") ) # rename columns
+
+Auto %>% select (all_of(quants) ) %>% skim %>% 
+  select(skim_variable, numeric.p50) %>% 
+  as_tibble %>% rename(Median=numeric.p50)  # Median
+
+Auto %>% select (all_of(quants) ) %>% skim %>% 
+  select(skim_variable, numeric.p25, numeric.p75) %>%
+   as_tibble %>% mutate(iqr=numeric.p75- numeric.p25) #interquartile range
+```
+
+Notice that some of these are already in the `skim` output.
+
+# (d)
+Now remove the 10th through 85th observations. What is the range, mean, and standard deviation of each predictor in the subset of the data that remains?
+
+First we remove the designated rows. Notice the minus sign in front of the parentheses indicating the set of rows.
+```{r}
+Auto %>% slice(-(10:85)) %>% 
+  select (all_of(quants) ) %>% skim() %>% 
+  select(skim_variable, numeric.p0:numeric.p100) %>% # all quantiles
+  as_tibble %>% rename_with(~ str_remove(.x, "numeric.") ) # rename columns
+
+Auto %>% slice(-(10:85)) %>% 
+  select (all_of(quants) ) %>% skim %>% 
+  select(skim_variable, numeric.p50) %>% 
+  as_tibble %>% rename(Median=numeric.p50)  # Median
+
+Auto %>% slice(-(10:85)) %>% 
+  select (all_of(quants) ) %>% skim %>% 
+  select(skim_variable, numeric.p25, numeric.p75) %>%
+   as_tibble %>% mutate(iqr=numeric.p75- numeric.p25) #interquartile range
+```
+
+Clean and easy to understand! And very different from the range, mean and IQR of the entire dataset.
+
+# (e)
+Using the full data set, investigate the predictors graphically, using scatterplots or other tools of your choice. Create some plots highlighting the relationships among the predictors. Comment on your findings.
+
+A pairs plot of the quants is a good choice.
+```{r fig.width=11}
+Auto %>% select(all_of(quants)) %>% ggpairs(progress=FALSE)
+```
+
+Notice how `displacement` and `horsepower` are correlated! Also, mpg and displacement or horsepower or acceleration are negatively correlated. mpg and displacement seem to have a curving decline (same with horsepower), this could be worth modeling. displacement and horsepower seem to have an almost linear relation. Does physics make that plausible? All this from one graph.
+
+```{r}
+Auto %>% select(mpg, horsepower, cylinders) %>%
+  ggpairs(progress=F)
+```
+
+`cylinders` is also correlated with `horsepower` and negatively with `mpg`.
+
+
+```{r}
+Auto %>% select(mpg, year, origin) %>% ggpairs(progress=F)
+```
+
+`mpg` seems to be improving with `year`. `year` and `origin` don't have much relation. But autos with `origin`=3 (Japan) have higher `mpg` than others, and similarly for `origin`=2, Europe.
+
+# (f)
+Suppose that we wish to predict gas mileage (`mpg`) on the basis of the other variables. Do your plots suggest that any of the other variables might be useful in predicting `mpg`? Justify your answer.
+
+Let's do some scatterplots. We will use `patchwork` with a '+' sign to put them together.
+
+```{r}
+ggplot(Auto) + geom_point(aes(x=horsepower, y=mpg)) +
+ggplot(Auto) + geom_point(aes(x=displacement, y=mpg)) +
+ggplot(Auto) + geom_point(aes(x=weight, y=mpg))
+```
+
+It seems `mpg` is negative exponentially related to either `displacement`, `horsepower` or`weight`. Any one of them might do equally well.
+
+We could start formulating hypotheses and testing models with regression, but we will leave that for another time.
+
+# Conclusion
+We have analyzed some aspects of the Auto dataset and learned how to use some modern R functions to do it.
+
+# References
+::: {#r1}
+1. ISLR (2013) Applied Exercise 9, Chapter 2, page 56.

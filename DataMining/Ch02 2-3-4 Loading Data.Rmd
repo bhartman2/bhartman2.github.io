@@ -1,0 +1,110 @@
+---
+title: Ch02 2-3-4 Loading Data
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-10-14 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: united
+    highlight: tango
+abstract: |
+  We follow Section 2.3.4 and 2.3.5 of [the book](#r1) using new `tidyverse` methods.
+---
+
+# Introduction
+We follow [ISLR (2013)](#r1) pages 48 to 51 for loading data using `tidyverse` concepts.
+
+# Packages
+As usual, we have some standard packages. 
+```{r}
+library(ISLR2) # some data files
+library(mbadtools)
+```
+
+# Data
+The `Auto` dataset is in the `ISLR2` package. We discuss reading Excel and csv files in other notebooks.
+```{r}
+data(Auto)
+```
+
+Display the data by yelling its name.
+```{r}
+Auto
+```
+
+Summarize data easily:
+
+```{r}
+Auto %>% skim
+```
+
+There is no missing data in this dataset. but if some entries were missing, we could remove those rows with the `na.omit` function.
+
+Column names can be retrieved like this:
+
+```{r}
+colnames(Auto)
+```
+
+
+# Graphical and Numeric Summaries
+
+Scatterplots are easily done with `ggplot`. *We no longer use the `attach` function as it always led to trouble.*
+
+```{r}
+Auto %>% ggplot() + 
+  geom_point(aes(cylinders, mpg))
+```
+Boxplots are also easy for categorical variables like `cylinders`. The `labs()` function adds titles, subtitles, x and y axis labels.
+```{r}
+Auto %>% ggplot() +
+  geom_boxplot(aes(as.factor(cylinders), mpg), color="red") +
+  labs(x="Cylinders",
+       y="MPG")
+```
+# Histograms
+
+In histograms I like to outline the bars in black, and make the fill the color I  want. I can use the alpha parameter to change the transparency. The info message can be suppressed by picking a bins number in the function, or simply using 'message=FALSE' in the {r}.
+```{r message=FALSE}
+Auto %>% ggplot() +
+  geom_histogram(aes(mpg), color="black", fill="red", alpha=0.5) +
+  labs(x="MPG",
+       y="Count")
+```
+
+# Pairs plot
+The `ggplot` version also shows correlation coefficients and density plots. There are many options; see [GGally::ggpairs](https://www.rdocumentation.org/packages/GGally/topics/ggpairs).
+```{r}
+Auto %>% 
+  select(mpg, displacement, horsepower, weight, acceleration) %>% 
+  ggpairs(progress=F)
+```
+
+# Summary
+The `summary` function still works and is quick, but the `skim` function is better. That's because you can actually grab the individual numbers out of the `skim` objects.
+
+```{r}
+Auto %>% summary()
+Auto %>% skim()
+```
+
+From the `skim`, you can see that the `name` variable has 301 distinct character values, and there are no missing values in any of the 11 numeric variables.
+
+If you want the median of `mpg` for instance, you can grab it from the `skim` output. Median is the 50th percentile.
+```{r}
+Auto %>% skim %>% select(skim_variable, numeric.p50) %>% 
+  filter(skim_variable=="mpg")
+```
+
+
+# Conclusion
+We found out how do things in sections 2.3.4 and 2.3.5 the modern tidyverse way.
+
+# References
+::: {#r1}
+1. ISLR (2013), Chapter 2 Statistical Learning, page 48-51.
+
+
