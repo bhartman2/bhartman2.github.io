@@ -1,0 +1,160 @@
+---
+title: Workflow Really Simple
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-16 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  Really simple workflows using `tidymodels` workflow.
+---
+  
+# Introduction
+These examples come from [Examples for 'workflowsets::workflow_set'](#r1).
+
+The workflow set combines three different data treatments (recipes) with two different models, for a total of 6 different runs.
+
+# Packages
+These are the required packages. All of them are loaded with `mbadtools`.
+```{r}
+# library(workflowsets)
+# library(workflows)
+# library(modeldata)
+# library(recipes)
+# library(parsnip)
+# library(dplyr)
+# library(rsample)
+# library(tune)
+# library(yardstick)
+library(mbadtools)
+```
+
+# Data
+[Hill, LaPan, Li and Haney (2007)](#r2) develop models to predict which cells in a high content screen were well segmented. The data consists of imaging measurements on 2019. The original analysis used 1009 for training and 1010 as a test set (see the column called case). There are 57 columns in the dataset.
+
+```{r}
+data(cells)
+cells <- cells |> select(-case)
+cells %>% skim
+```
+The outcome class is contained in a factor variable called class with levels "PS" for poorly segmented and "WS" for well segmented.
+
+The [raw data used in the paper](https://media.springernature.com/original/springer-static/esm/art%3A10.1186%2F1471-2105-8-340/MediaObjects/12859_2006_1712_MOESM1_ESM.csv) can be found at the Biomedcentral website. The version contained in cells is modified. First, several discrete versions of some of the predictors (with the suffix "Status") were removed. Second, there are several skewed predictors with minimum values of zero (that would benefit from some transformation, such as the log). A constant value of 1 was added to these fields: `avg_inten_ch_2`, `fiber_align_2_ch_3`, `fiber_align_2_ch_4`, `spot_fiber_count_ch_4` and `total_inten_ch_2`
+
+# Validation Set for tuning
+```{r}  
+set.seed(1)
+val_set <- validation_split(cells)
+```
+
+# Recipe
+A number of techniques are used to prepare the data.
+
+* The Yeo-Johnson transformation is very similar to the Box-Cox but does not require the input variables to be strictly positive. In the package, the partial log-likelihood function is directly optimized within a reasonable set of transformation values (which can be changed by the user).
+* Centering data means that the average of a variable is subtracted from the data. Scaling data means that the standard deviation of a variable is divided out of the data. `step_normalize()` estimates the variable standard deviations and means from the data used in the training argument of `prep()`. `bake()` then applies the scaling to new data sets using these estimates.
+* Principal component analysis (PCA) is a transformation of a group of variables that produces a new set of artificial features or components. We tune the number of components used.  These components are designed to capture the maximum amount of information (i.e. variance) in the original variables. Also, the components are statistically independent from one another. This means that they can be used to combat large inter-variables correlations in a data set. It is advisable to standardize the variables prior to running PCA. Here, each variable will be centered and scaled prior to the PCA calculation.
+* The spatial sign transformation projects the variables onto a unit sphere and is related to global contrast normalization. The spatial sign of a vector `w` is `w/norm(w)`. `norm(w)` is the norm of the vector, corresponding to its length in euclidean space. The variables should be centered and scaled prior to the computations.
+
+```{r}
+  basic_recipe <-
+    recipe(class ~ ., data = cells) |>
+    step_YeoJohnson(all_predictors()) |>
+    step_normalize(all_predictors())
+  
+  pca_recipe <-
+    basic_recipe |>
+    step_pca(all_predictors(), num_comp = tune())
+  
+  ss_recipe <-
+    basic_recipe |>
+    step_spatialsign(all_predictors())
+```
+  
+# Models
+```{r}
+knn_mod <-
+  nearest_neighbor(neighbors = tune(), weight_func = tune()) |>
+  set_engine("kknn") |>
+  set_mode("classification")
+
+lr_mod <-
+  logistic_reg() |>
+  set_engine("glm")
+```
+
+# Workflow Set
+```{r}  
+preproc <- list(none = basic_recipe, pca = pca_recipe, sp_sign = ss_recipe)
+models <- list(knn = knn_mod, logistic = lr_mod)
+
+cell_set <- workflow_set(preproc, models, cross = TRUE)
+cell_set
+```
+
+# Fitting
+```{r}
+cell_res <- cell_set %>% 
+  workflow_map("tune_grid", resamples = val_set, seed=2)
+```
+
+# Metrics
+```{r fig.width=12}
+# res_none_knn = extract_workflow_set_result(cell_res, 'none_knn')$.metrics
+cell_metrics <- cell_res %>% collect_metrics() %>% 
+  pivot_wider(names_from = .metric, values_from = mean)
+cell_metrics %>% 
+  group_by(wflow_id) %>% 
+  select(-.estimator, -n, -std_err, -preproc) %>% 
+  arrange(desc(roc_auc)) %>% 
+  gt() %>% opt_interactive() %>% fmt_number(decimals = 4)
+```
+
+# Using variables and formulas
+```{r}  
+# Select predictors by their names
+channels <- paste0("ch_", 1:4)
+channels
+preproc <- purrr::map(channels, \(.x) workflow_variables(class, c(contains(!!.x))))
+names(preproc) <- channels
+preproc$everything <- class ~ .
+preproc
+
+cell_set_by_group <- workflow_set(preproc, models["logistic"])
+cell_set_by_group
+```
+
+# Fit
+```{r}
+tictoc::tic() # start run timer
+cell_res_by_group <- cell_set_by_group %>% 
+  workflow_map("tune_grid", resamples = val_set, seed=3)
+tictoc::toc() # stop and print runtime
+```
+
+# Metrics
+```{r}
+cell_metrics_by_group <- cell_res_by_group %>% collect_metrics() %>% 
+  pivot_wider(names_from = .metric, values_from = mean)
+cell_metrics_by_group %>%
+  group_by(wflow_id) %>% 
+  select(-.estimator, -n, -std_err, -preproc) %>% 
+  arrange(desc(roc_auc)) %>% 
+  gt() %>% opt_interactive() %>% fmt_number(decimals = 4)
+```
+
+# Conclusion
+It doesn't take much to run multiple models and configurations with a workflow set.
+
+# References
+:::{#r1}
+Examples for `workflowsets::workflow_set` (n.d.) In 
+[https://www.rdocumentation.org/packages/workflowsets/topics/workflow_set](https://www.rdocumentation.org/packages/workflowsets/topics/workflow_set)
+
+:::{#r2}
+Hill, LaPan, Li and Haney (2007). Impact of image segmentation on high-content screening data quality for SK-BR-3 cells, BMC Bioinformatics, Vol. 8, pg. 340, https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-8-340.
+

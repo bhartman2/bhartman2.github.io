@@ -1,0 +1,234 @@
+---
+title: Workflow Multiple Models
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-12 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some techniques for multiple models using `tidymodels` modeling workflow.
+---
+
+# Introduction
+This notebook is designed to show how to use `tidymodels` workflow for multiple models you wish to compare. 
+
+One of the reasons for developing workflows is to make sure you use exactly the same conditions on each model in order to compare one with another. 
+
+# Packages
+We use the standard packages and `tidymodels`.
+```{r}
+library(ISLR2)
+library(mbadtools) # preferred packages for course
+```
+
+# Data
+We use the `Bikeshare` data from ISLR2.
+```{r}
+Bikeshare %>% skim
+```
+There are 12 columns. The number of bikers is column `bikers`, usually the target variable. Three columns are factors, the others numeric. There's no missing data.
+
+# Research Problem
+We want to find a good model to predict the number of bikers, given all the other variables. We will try some esoteric AI type models.
+
+# Models to consider
+Some models to consider are a random forest, a neural net, and a decision tree. You can find the `tidymodels` possible models [at the parsnip website](https://www.tidymodels.org/find/parsnip/).
+
+* Random forest using `ranger` [website](https://parsnip.tidymodels.org/reference/details_rand_forest_ranger.html)
+* Bagged neural network using `nnet` [website](https://parsnip.tidymodels.org/reference/details_bag_mlp_nnet.html)
+* Bagged trees via `rpart` [website](https://parsnip.tidymodels.org/reference/details_bag_tree_rpart.html)
+
+Bagging is a so called ensemble technique, in which the basic model is run multiple times (the bagging) and then the outputs are 'averaged' to get the fitted result.  Random forest itself contains multiple random trees that are then combined to get the predictions.
+
+# Design
+We want to train models on a part of the dataset, and evaluate them on the test dataset. Because we are using complex models with lots of parameters, we create a 5-fold CV data partition to tune the parameters on.
+
+# Data Preparation
+We perform a Crossvalidation split. Split the data into training and test datasets. We use an 80-20 split performed with the `rsample` package in `tidyverse`.
+
+```{r}
+set.seed(2026)
+split <- initial_split(Bikeshare, prop = 0.8, strata = bikers)  # `bikers` is the outcome
+train_data <- training(split)
+test_data  <- testing(split)
+folds      <- vfold_cv(train_data, v = 5)
+```
+
+# Recipe
+The recipe creates the formula and the data in a standard manner. It's like defining the formula and data. It also allows some modification such as scaling and removing variables with little variance, that is, that are almost constant and therefore unable to affect anything.
+
+Most AI models work better with numeric predictors centered/scaled. Any model we choose predicts `bikers` using all other variables, and uses the training data. We'll validate it on the test data later on.
+
+In a recipe we only provide a dataset so the formula names can be recognized.
+
+```{r}
+bikeshare_recipe <- recipe(bikers ~ ., data = train_data) %>%  
+  step_nzv(all_predictors()) # remove near-zero variance variables if any
+
+rec_basic <- bikeshare_recipe
+
+rec_normalized <- bikeshare_recipe %>% 
+  step_normalize(all_numeric_predictors()) # center & scale numeric predictors
+
+```
+
+# Models
+For random forest we will tune 'mtry' and 'min_n' parameters.
+```{r}
+rf_spec <- rand_forest(
+  mode = "regression",
+  mtry = tune(),        # number of predictors sampled at each split
+  min_n = tune(),       # minimum data points in a node
+  trees = 1000          # keep high for stability
+) %>% set_engine("ranger", importance = "permutation")
+
+params <-
+  tribble(
+    ~parameter, ~object,
+    "mtry", mtry(),
+    "min_n", min_n()
+  )
+complete_params <- params %>% 
+  mutate(object = map(object, finalize, select(Bikeshare, -bikers)))
+
+```
+
+Needed for bagging methods.
+```{r}
+library(baguette) # needed for bagging 
+```
+
+Bagged neural net has parameters 'penalty' and 'hidden_units' for tuning.
+```{r}
+bag_nn_spec <- bag_mlp(penalty = tune(), 
+                       hidden_units = tune()
+                       ) %>% 
+  set_engine("nnet") %>% 
+  set_mode("regression") %>% 
+  translate()
+
+# Create a grid using dials functions (grid_regular, grid_random)
+# dials supplies default ranges for hidden_units() and penalty() automatically
+bag_mlp_grid <- grid_regular(extract_parameter_set_dials(bag_nn_spec))
+bag_mlp_grid
+```
+
+Bagged `rpart` tree has parameters 'tree_depth', 'min_n', and 'cost_complexity' for tuning.
+```{r}
+bag_tree_rpart_spec <- bag_tree(
+    tree_depth = tune(),
+    min_n = tune(),
+    cost_complexity = tune()
+  )  %>% 
+  set_engine("rpart") |>
+  set_mode("regression") |>
+  translate()
+
+# Create a grid using dials functions (grid_regular, grid_random)
+# dials supplies default ranges for hidden_units() and penalty() automatically
+bag_tree_rpart_grid <- grid_regular(extract_parameter_set_dials(bag_tree_rpart_spec))
+bag_tree_rpart_grid
+```
+
+# Workflow Set
+For multiple models run at once we use the `workflowset` package and create a workflow set.
+```{r}
+wf_set <- workflow_set(
+  preproc = list(rec_basic, rec_normalized),
+  models  = list(rf = rf_spec, 
+                 nn = bag_nn_spec,
+                 dt = bag_tree_rpart_spec),
+  cross = TRUE # Cross-combines all recipes with all models
+)
+```
+
+# Tune All Models with Resamples
+```{r}
+set.seed(123)
+# Fit every workflow in the set across all CV folds
+tictoc::tic() # start runtime timer
+wf_results <- wf_set %>% 
+  workflow_map("tune_grid", resamples = folds)
+tictoc::toc() # stop timer and print runtime
+wf_results
+```
+# Rank and Compare Model Performance
+```{r}
+collect_metrics(wf_results)
+
+# Rank models by performance (e.g., RMSE)
+rank_results(wf_results, rank_metric = "rmse", select_best = TRUE)
+```
+
+# Plot performance comparisons visually
+<a name="fig1"></a>
+```{r}
+wrap_plots(
+  list(autoplot(wf_results, metric = "rsq"),
+       autoplot(wf_results, metric = "rmse")
+      ), ncol=2, guides='collect')
+```
+
+Random forest clearly did the best.
+```{r}
+rank_results(wf_results, rank_metric = "rmse", select_best = TRUE)[1,]
+```
+
+# Extract and Fit Best Model
+Once you pick the winning workflow, extract and finalize it on the whole training set:
+
+```{r}
+# Extract a specific workflow (e.g., "")
+best_wf <- extract_workflow(wf_results, id = "recipe_2_rf")
+
+# Extract the best hyperparameters for that specific workflow
+best_params <- select_best(
+  extract_workflow_set_result(wf_results, id = "recipe_2_rf"), 
+  metric = "rmse"
+)
+
+# Finalize the workflow with best hyperparameter values
+final_wf <- finalize_workflow(best_wf, best_params)
+
+# Fit on 100% of data and evaluate on test_data
+tictoc::tic()
+final_fit <- last_fit(final_wf, split)
+tictoc::toc()
+
+# View test set metrics (e.g., RMSE, R-squared)
+collect_metrics(final_fit)
+```
+
+# Predictions
+Make predictions for 1731 test rows. We know the rmse for these is 2.18, very low.
+```{r}
+collect_predictions(final_fit, summarize=TRUE) %>% 
+  arrange(.row)
+```
+
+# Conclusion
+We have shown how to handle fitting and testing three models with various parameter settings. The random forest with 'mtry=11' and 'min_n=10' gave the best results. This is shown well in [Figure 1](#fig1) above. The tuning parameters are shown below.
+
+```{r}
+# Extract all tuning results for recipe_2_rf and filter by the winning .config
+collect_metrics(extract_workflow_set_result(wf_results, id = "recipe_2_rf")) %>% 
+  filter(.config == "pre0_mod09_post0") %>% 
+  distinct(mtry, min_n, .config)
+```
+
+
+# References
+:::{#r1}
+Kuhn et al., (2020). Tidymodels: a collection of packages for modeling and machine learning using tidyverse principles. (https://www.tidymodels.org)
+
+:::{#r2}
+Search parsnip models, (n.d.) (https://www.tidymodels.org/find/parsnip/)
+
+:::{#r3}
+Explore tidymodels, (n.d.) (https://www.tidymodels.org/find/)
+

@@ -1,0 +1,311 @@
+---
+title: Workflow Data Wrangling
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-15 Revised `r lubridate::now() %>% format_ISO8601()`
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some techniques for manipulating data using `tidymodels` modeling workflow.
+---
+
+# Introduction
+This notebook is designed to show how to use `tidymodels` workflow to wrangle your data for modeling.
+
+Lots of times we do this before we start to model. We often do it in R (or even older fashioned, try to do it in Excel!) so our work is dependent on our R coding techniques. Such things as renaming columns, making categorical data into factors, scaling data to be normal with mean 0 and sd 1, or transforming variables rely on our R code. 
+
+With `tidymodels` we can do some of this wrangling right in the recipe step, without touching our starting data itself.
+
+# Packages
+We use the standard packages and `tidymodels`.
+```{r}
+library(ISLR2)
+if(!("mbadtools" %in% installed.packages()))  pak::pak("bhartman2/mbadtools")
+library(mbadtools, quietly = TRUE) # some extra ggplot functions
+```
+
+# Data
+We obtained a large and curious dataset from [Kaggle](#r2), with over 2 million records, and reduced it in size to something manageable by reading 200 rows.
+
+```{r}
+library(readr)
+tictoc::tic("Time to Read Data")
+airline_200 <- read_csv("airline_2m.csv", n_max=200)
+tictoc::toc()
+```
+
+```{r warning=FALSE}
+airline_200 %>% skim_without_charts()
+```
+
+# Data Wrangling
+What do we notice about this data? There are 200 rows and 109 columns. 
+
+* Some numeric columns have almost zero variance
+* Some columns have lots of missing values: 
+  * 197 for `CancellationCode`, a character variable
+  * 200 for all 47 of the logical variables, that is all of the rows!
+  * 171 for a whole series of 5 numeric variables; 
+  * 127 for `DivAirportLandings`
+* Some numeric variables are highly correlated; only one should be kept.
+* Some numeric variables are really codes:
+  * 1-15 in the numeric skim, and many others.
+
+```{r}
+airline_200 %>% skim_without_charts(Cancelled)
+airline_200 %>% select(Cancelled) %>% summarize(n=n(), .by=Cancelled)
+```
+
+* `Cancelled` is numeric and an indicator, but it is sparse, so its removal depends on the cut point chosen-- what frequency of nonzero values needs be present to include it?
+  * `r 195/200` is 97.5%.
+ 
+We ought to eliminate the columns that have over 100 missing values, and those with zero variance. We also should put in a cut that leaves `Cancelled` in, as it could be important.
+
+# Correlated Variables
+We could plan to remove some variables based on similar meanings.
+```{r}
+airline_200 %>% select(Distance, DistanceGroup) %>% cor
+airline_200 %>% select(ArrDelay,ArrDelayMinutes, ArrivalDelayGroups) %>% cor
+airline_200 %>% select(DestAirportID,DestAirportSeqID) %>% cor
+airline_200 %>% select(DestAirportID,DestAirportSeqID) %>% cor
+```
+`ArrDelay`, `ArrDelayMinutes`,are related because the first contains negative entries, for early, and the second zeroes them out. `ArrivalDelayGroups` is a classification.
+
+`Distance`, `DistanceGroup` are highly correlated; the second is a classification assigned based on the mileage in the first.
+
+`DestAirportID`, `DestAirportSeqID` are 100% correlated. One contains the other. As a numeric variable they enter wrongly into the calculation.
+
+Some of the codes at least should be converted to factors, but we won't do that.
+
+# Wrangling with `dplyr`
+The non-workflow way to handle this is with `dplyr`.
+```{r warning=FALSE}
+airline_200 %>% skim %>% summary
+```
+
+For zero variance, we keep numeric cols with sd > .000001, essentially 0:
+```{r warning=FALSE}
+HSD = airline_200 %>% skim %>%
+  filter(numeric.sd <=.000001) %>% 
+  pull(skim_variable)
+HSD
+
+airline_200_1= airline_200 %>% select(-HSD)
+airline_200_1 %>% skim %>% summary()
+```
+
+For the few numeric columns with large numbers of missing values:
+```{r warning=FALSE}
+FMV = airline_200_1 %>% skim %>% yank("numeric") %>% 
+  filter(n_missing >= 80) %>% 
+  pull(skim_variable)
+FMV
+
+airline_200_2= airline_200_1 %>% select(-FMV)
+airline_200_2 %>% skim %>% summary
+```
+
+Remove the correlated variables, and all the logical variables, which are all missing values.
+```{r warning=FALSE}
+airline_200_3 = airline_200_2 %>% 
+  select(-ArrDelayMinutes, -ArrivalDelayGroups,
+         -DistanceGroup, -DestAirportSeqID) %>% 
+  select(-where(is.logical), 
+         -where(is.factor), 
+         -where(is.Date), 
+         -where(is.character)
+         ) 
+           
+airline_200_3 %>% skim %>% summary
+airline_200_3 %>% names
+```
+27 columns remain.
+
+# Wrangling with `tidymodels`
+Start with a basic recipe defining the model formula and dataset. The dataset is not a permanent choice; it just has to have all the column names in it.
+
+## Recipe
+```{r}
+airline_recipe_basic <- recipe(ActualElapsedTime ~ ., data = airline_200)
+```
+
+## Preprocess
+Modify the recipe by preprocessing steps:
+
+To match the `dplyr` output we need to include `Cancelled`. It is a 0/1 variable with few 1's.  For that reason we modify the non-zero-variance first step with 'freq_cut = 98/2', rather than the default 95/5.
+```{r}
+airline_rec3 <- airline_recipe_basic %>% 
+  # remove numeric predictors with close to zero variance or more than 98% a single value
+  step_nzv(all_numeric_predictors(), freq_cut = 98/2) %>% 
+  # remove cols with missing valuess over .4 *200
+  step_filter_missing(all_numeric_predictors(), threshold=.4) %>%  
+  # remove logicals
+  step_rm(all_logical_predictors()) %>% 
+  # remove factors
+  step_rm(all_factor_predictors()) %>% 
+  # remove date column
+  step_rm(all_date_predictors()) %>% 
+  # remove specific correlated columns
+  step_rm(ArrDelayMinutes, ArrivalDelayGroups,
+         DistanceGroup, DestAirportSeqID)
+```
+
+Which method is easier?
+
+## Prep
+Prep the data with the revised recipe; this shows what is being done at each step, as a check.
+```{r}
+pr3 <- prep(airline_rec3, training=airline_200,
+           verbose=TRUE, log_changes=TRUE, fresh=TRUE)
+```
+## Bake
+Bake the prepped data into a dataframe for checking:
+```{r}
+bk3 = bake(pr3, new_data=airline_200)
+bk3
+```
+
+## Skim
+```{r}
+bk3 %>% skim %>% summary
+```
+
+27 columns remain, all numeric.
+
+## Compare Columns
+Check names of variables: `setequal()` easily checks that the sets of names match.
+```{r}
+setequal(airline_200_3 %>% names, 
+         bk3 %>% names)
+```
+
+# Model
+We will use a `ranger` random forest model.
+
+We specify 'mtry', 'min_n', and 'trees' parameters according to `ranger` documentation.
+
+```{r}
+rf_spec <- rand_forest(
+  mode = "regression",
+  mtry = 8,        # number of predictors sampled at each split
+  min_n = 10,       # minimum data points in a node
+  trees = 1000          # keep high for stability
+) %>% set_engine("ranger", importance = "permutation", keep.inbag = TRUE)
+```
+
+# Workflow
+Build the workflow.
+```{r}
+rf_workflow <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_recipe(airline_rec3)
+```
+
+# Run Workflow
+There are 5 missing values in the `airline_200` target column `ActualElapsedTime`. Random forest will not run with NA target values.
+```{r}
+# Filter out missing values in the target column
+airline_clean <- airline_200 %>% 
+  filter(!is.na(ActualElapsedTime))
+#Fit the workflow with clean data.
+tictoc::tic()
+rf_fit <- rf_workflow %>% 
+  fit(data = airline_clean)
+tictoc::toc()
+```
+
+# Predictions
+On the clean data. Since we kept the 'inbag' in the random forest we can compute standard error `se` in the predictions. We then augment with the response and the lower and upper 95% ci values.
+```{r}
+rf_fit_obj = extract_fit_engine(rf_fit)
+rf_pred <- predict(rf_fit_obj, airline_clean, type="se")
+rf_aug <- data.frame(ActualElapsedTime = 
+                       airline_clean %>% pull(ActualElapsedTime),
+                    .pred = rf_pred$predictions, 
+                    .se = rf_pred$se) %>% 
+          mutate(.lower = .pred-1.96*.se,
+                 .upper=.pred+1.96*.se)
+rf_aug
+```
+
+# Metrics
+Compute metrics.
+```{r}
+rf_metrics <- rf_aug %>% 
+  metrics(truth = ActualElapsedTime, estimate = .pred)
+rf_metrics %>% arrange(desc(.metric))
+```
+
+# Metrics CI
+To get confidence intervals on the predictions we bootstrap the augmented predictions; default number of times is 25, but we use 500. Then we extract the metrics and summarize them to display confidence intervals.
+```{r}
+set.seed(123)
+
+# 1. bootstrap the rf_aug dataset
+boots <- bootstraps(rf_aug, times=500)
+
+# 2. Extract metrics across resamples
+boot_metrics <- map_dfr(boots$splits, ~ {
+  analysis(.x) %>% 
+    metrics(truth = ActualElapsedTime, 
+            estimate = .pred)
+})
+
+# 3. View CIs
+boot_cis <- boot_metrics %>%
+  group_by(.metric) %>%
+  summarize(
+    mean_estimate = mean(.estimate),
+    lower_ci      = quantile(.estimate, 0.025),
+    upper_ci      = quantile(.estimate, 0.975)
+  )
+
+boot_cis %>% arrange(desc(.metric))
+```
+
+# YVP plot
+A YVP plot shows how well the model does. We also show a smoothed CI.
+```{r message=FALSE}
+rf_aug %>% 
+  ggplot(aes(ActualElapsedTime, .pred)) +
+  stat_smooth(
+    geom = "ribbon",
+    method = "gam",
+    aes(ymin = after_stat(y - 1.96 * se), 
+        ymax = after_stat(y + 1.96 * se)),
+    fill = "blue",
+    alpha = 0.2
+  ) +
+  geom_point() + 
+  geom_abline(aes(slope=1, intercept=0), color="red")+
+  labs(y="rf Predicted", title="YVP plot") +
+  theme_bw()
+```
+The model is a fairly good fit except for very long elapsed times.
+
+# Variable Importance
+Variable importance is interesting.The `vip` package is loaded with `mbadtools`.
+```{r fig.height=10, fig.width=12, warning=FALSE}
+rf_fit_obj <- extract_fit_parsnip(rf_fit)$fit
+# variable importances
+vi_rf = vi(rf_fit_obj)
+# plot top featues
+vi_rf %>% slice(1:10) %>% 
+  gg_vip(width=.8, fill="green") +
+  labs(subtitle="Random forest top features for `ActualElapsedTime`")
+```
+
+# Conclusion
+We have shown how to wrangle the `airlines_200` dataset with workflow preprocessing. There are lots of options for preprocessing, which you can find in the [documentation for `tidymodels`](#r1).
+
+# References
+:::{#r1}
+Tidymodels Website. (n.d.) (https://www.tidymodels.org/)
+
+:::{#r2}
+Kaggle (2025) Kaggle Carrier Ontime Performance. (https://www.kaggle.com/datasets/mexwell/carrier-on-time-performance-dataset)

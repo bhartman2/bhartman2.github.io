@@ -1,0 +1,1456 @@
+---
+title: "Using infer"
+author: 
+  name: Bruce Hartman
+  affiliation: University of St. Francis
+date: 2026-08-22
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+abstract: |
+  We present some uses of the `infer` package.
+---
+
+# Introduction
+
+# Packages
+```{r}
+library(infer)
+library(ISLR2)
+if(!("mbadtools" %in% installed.packages()))  pak::pak("bhartman2/mbadtools")
+library(mbadtools) # some extra ggplot functions
+library(tidymodels)
+conflicted::conflict_prefer_matching("select|filter", "dplyr", quiet=TRUE)
+```
+
+# Data
+```{r}
+# load in the dataset
+data(gss)
+
+# take a glimpse at it
+str(gss)
+```
+
+# Data Description
+```{r}
+gss %>% skim
+```
+
+# Analysis
+As an example, we’ll run an analysis of variance on age and partyid, testing whether the age of a respondent is independent of their political party affiliation.
+```{r}
+F_hat <- gss |> 
+  specify(age ~ partyid) |>
+  calculate(stat = "F")
+F_hat %>% glimpse
+```
+
+This checks with the value of F for the linear regression of `age` on `partyid`.
+```{r}
+lm(age ~ partyid, data=gss) %>% glance() %>% pull(statistic)
+```
+
+# Null Model
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+   specify(age ~ partyid) |>
+   hypothesize(null = "independence") |>
+   generate(reps = 1000, type = "permute") |>
+   calculate(stat = "F")
+null_dist %>% glimpse
+```
+
+# Visualize
+Visualizing the observed statistic alongside the null distribution,
+
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = F_hat, direction = "greater")
+```
+
+# p-value
+Calculating the p-value from the null distribution and observed statistic,
+
+```{r}
+null_dist |>
+  get_p_value(obs_stat = F_hat, direction = "greater")
+```
+The p-value is 0.05 or just about at the 95% CI level.
+
+# Hypothesis tests
+One numerical variable (mean)
+Calculating the observed statistic,
+
+```{r}
+x_bar <- gss |>
+  specify(response = hours) |>
+  calculate(stat = "mean")
+x_bar
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+
+```{r}
+x_bar <- gss |>
+  observe(response = hours, stat = "mean")
+```
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = hours) |>
+  hypothesize(null = "point", mu = 40) |>
+  generate(reps = 1000) |>
+  calculate(stat = "mean")
+glimpse(null_dist)
+```
+
+Visualizing the observed statistic alongside the null distribution,
+
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = x_bar, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = x_bar, direction = "two-sided")
+```
+
+# One numerical variable (standardized mean t)
+Calculating the observed statistic,
+```{r}
+t_bar <- gss |>
+  specify(response = hours) |>
+  hypothesize(null = "point", mu = 40) |>
+  calculate(stat = "t")
+glimpse(t_bar)
+```
+
+Alternatively, using the `observe()` wrapper to calculate the observed statistic,
+```{r}
+t_bar <- gss |>
+  observe(response = hours, null = "point", mu = 40, stat = "t")
+t_bar
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = hours) |>
+  hypothesize(null = "point", mu = 40) |>
+  generate(reps = 1000) |>
+  calculate(stat = "t")
+glimpse(null_dist)
+```
+
+Alternatively, finding the null distribution using theoretical methods using the `assume()` verb,
+```{r}
+null_dist_theory <- gss |>
+  specify(response = hours)  |>
+  assume("t")
+null_dist_theory %>% glimpse
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = t_bar, direction = "two-sided")
+```
+
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+```{r}
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = t_bar, direction = "two-sided")
+```
+
+Alternatively, visualizing the observed statistic using both of the null distributions,
+```{r}
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = t_bar, direction = "two-sided")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = t_bar, direction = "two-sided")
+```
+
+Alternatively, using the t_test() wrapper:
+```{r}
+gss |>
+  t_test(response = hours, mu = 40)
+```
+
+`infer` does not support testing on one numerical variable via the z distribution.
+
+# One numerical variable (median)
+Calculating the observed statistic,
+```{r}
+x_tilde <- gss |>
+  specify(response = age) |>
+  calculate(stat = "median")
+glimpse(x_tilde)
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+x_tilde <- gss |>
+  observe(response = age, stat = "median")
+x_tilde
+```
+
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = age) |>
+  hypothesize(null = "point", med = 40) |> 
+  generate(reps = 1000) |> 
+  calculate(stat = "median")
+```
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = x_tilde, direction = "two-sided")
+```
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = x_tilde, direction = "two-sided")
+```
+
+#One numerical variable (paired)
+The example under this header is compatible with stats "mean", "median", "sum", and "sd".
+
+Suppose that each of these survey respondents had provided the number of hours worked per week when surveyed 5 years prior, encoded as hours_previous.
+```{r}
+set.seed(1)
+
+gss_paired <- gss |>
+   mutate(
+      hours_previous = hours + 5 - rpois(nrow(gss), 4.8),
+      diff = hours - hours_previous
+   )
+
+gss_paired |>
+   select(hours, hours_previous, diff)
+```
+
+
+We’d like to test the null hypothesis that the "mean" hours worked per week did not change between the sampled time and five years prior.
+
+infer supports paired hypothesis testing via the null = "paired independence" argument to hypothesize().
+
+Calculating the observed statistic,
+```{r}
+x_tilde <- gss_paired |>
+  specify(response = diff) |>
+  calculate(stat = "mean")
+x_tilde
+```
+
+Alternatively, using the `observe()` wrapper to calculate the observed statistic,
+```{r}
+x_tilde <- gss_paired |>
+  observe(response = diff, stat = "mean")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss_paired |>
+  specify(response = diff) |>
+  hypothesize(null = "paired independence") |> 
+  generate(reps = 1000, type = "permute") |> 
+  calculate(stat = "mean")
+```
+
+Note that the diff column itself is not permuted, but rather the signs of the values in the column.
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = x_tilde, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = x_tilde, direction = "two-sided")
+```
+# One categorical (one proportion)
+Calculating the observed statistic,
+```{r}
+p_hat <- gss |>
+  specify(response = sex, success = "female") |>
+  calculate(stat = "prop")
+```
+
+Alternatively, using the `observe()` wrapper to calculate the observed statistic,
+```{r}
+p_hat <- gss |>
+  observe(response = sex, success = "female", stat = "prop")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = sex, success = "female") |>
+  hypothesize(null = "point", p = .5) |>
+  generate(reps = 1000) |>
+  calculate(stat = "prop")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = p_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = p_hat, direction = "two-sided")
+```
+Note that logical variables will be coerced to factors:
+```{r}
+null_dist <- gss |>
+  dplyr::mutate(is_female = (sex == "female")) |>
+  specify(response = is_female, success = "TRUE") |>
+  hypothesize(null = "point", p = .5) |>
+  generate(reps = 1000) |>
+  calculate(stat = "prop")
+```
+
+# One categorical variable (standardized proportion z)
+Calculating the observed statistic,
+```{r}
+p_hat <- gss |>
+  specify(response = sex, success = "female") |>
+  hypothesize(null = "point", p = .5) |>
+  calculate(stat = "z")
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+p_hat <- gss |>
+  observe(response = sex, success = "female", null = "point", p = .5, stat = "z")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = sex, success = "female") |>
+  hypothesize(null = "point", p = .5) |>
+  generate(reps = 1000, type = "draw") |>
+  calculate(stat = "z")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = p_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = p_hat, direction = "two-sided")
+```
+The package also supplies a wrapper around `prop.test()` for tests of a single proportion on tidy data.
+```{r}
+prop_test(gss,
+          college ~ NULL,
+          p = .2)
+```
+`infer` does not support testing two means via the z distribution.
+
+#Two categorical (2 level) variables
+The `infer` package provides several statistics to work with data of this type. One of them is the statistic for difference in proportions.
+
+Calculating the observed statistic,
+```{r}
+d_hat <- gss |> 
+  specify(college ~ sex, success = "no degree") |>
+  calculate(stat = "diff in props", order = c("female", "male"))
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+d_hat <- gss |>
+  observe(
+    college ~ sex,
+    success = "no degree",
+    stat = "diff in props", order = c("female", "male")
+  )
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(college ~ sex, success = "no degree") |>
+  hypothesize(null = "independence") |>
+  generate(reps = 1000) |>
+  calculate(stat = "diff in props", order = c("female", "male"))
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = d_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = d_hat, direction = "two-sided")
+```
+`infer` also provides functionality to calculate ratios of proportions. The workflow looks similar to that for `diff` in `props`.
+
+Calculating the observed statistic,
+```{r}
+r_hat <- gss |> 
+  specify(college ~ sex, success = "no degree") |>
+  calculate(stat = "ratio of props", order = c("female", "male"))
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+r_hat <- gss |> 
+  observe(college ~ sex, success = "no degree",
+          stat = "ratio of props", order = c("female", "male"))
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(college ~ sex, success = "no degree") |>
+  hypothesize(null = "independence") |> 
+  generate(reps = 1000) |> 
+  calculate(stat = "ratio of props", order = c("female", "male"))
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = r_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = r_hat, direction = "two-sided")
+```
+In addition, the package provides functionality to calculate odds ratios. The workflow also looks similar to that for diff in props.
+
+Calculating the observed statistic,
+```{r}
+or_hat <- gss |> 
+  specify(college ~ sex, success = "no degree") |>
+  calculate(stat = "odds ratio", order = c("female", "male"))
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(college ~ sex, success = "no degree") |>
+  hypothesize(null = "independence") |> 
+  generate(reps = 1000) |> 
+  calculate(stat = "odds ratio", order = c("female", "male"))
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = or_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = or_hat, direction = "two-sided")
+```
+
+# Two categorical (2 level) variables (z)
+Finding the standardized observed statistic,
+```{r}
+z_hat <- gss |> 
+  specify(college ~ sex, success = "no degree") |>
+  hypothesize(null = "independence") |>
+  calculate(stat = "z", order = c("female", "male"))
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+z_hat <- gss |> 
+  observe(college ~ sex, success = "no degree",
+          stat = "z", order = c("female", "male"))
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(college ~ sex, success = "no degree") |>
+  hypothesize(null = "independence") |> 
+  generate(reps = 1000) |> 
+  calculate(stat = "z", order = c("female", "male"))
+```
+
+Alternatively, finding the null distribution using theoretical methods using the `assume()` verb,
+```{r}
+null_dist_theory <- gss |>
+  specify(college ~ sex, success = "no degree") |>
+  assume("z")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = z_hat, direction = "two-sided")
+```
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+```{r}
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = z_hat, direction = "two-sided")
+```
+
+Alternatively, visualizing the observed statistic using both of the null distributions,
+```{r}
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = z_hat, direction = "two-sided")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = z_hat, direction = "two-sided")
+```
+Note the similarities in this plot and the previous one.
+
+The package also supplies a wrapper around `prop.test` to allow for tests of equality of proportions on tidy data.
+```{r}
+prop_test(gss, 
+          college ~ sex,  
+          order = c("female", "male"))
+```
+
+#One categorical (>2 level) - GoF
+Calculating the observed statistic,
+
+Note the need to add in the hypothesized values here to compute the observed statistic.
+```{r}
+Chisq_hat <- gss |>
+  specify(response = finrela) |>
+  hypothesize(
+    null = "point",
+    p = c(
+      "far below average" = 1 / 6,
+      "below average" = 1 / 6,
+      "average" = 1 / 6,
+      "above average" = 1 / 6,
+      "far above average" = 1 / 6,
+      "DK" = 1 / 6
+    )
+  ) |>
+  calculate(stat = "Chisq")
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+Chisq_hat <- gss |>
+  observe(
+    response = finrela,
+    null = "point",
+    p = c(
+      "far below average" = 1 / 6,
+      "below average" = 1 / 6,
+      "average" = 1 / 6,
+      "above average" = 1 / 6,
+      "far above average" = 1 / 6,
+      "DK" = 1 / 6
+    ),
+    stat = "Chisq"
+  )
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(response = finrela) |>
+  hypothesize(
+    null = "point",
+    p = c(
+      "far below average" = 1 / 6,
+      "below average" = 1 / 6,
+      "average" = 1 / 6,
+      "above average" = 1 / 6,
+      "far above average" = 1 / 6,
+      "DK" = 1 / 6
+    )
+  ) |>
+  generate(reps = 1000, type = "draw") |>
+  calculate(stat = "Chisq")
+```
+
+Alternatively, finding the null distribution using theoretical methods using the `assume()` verb,
+```{r}
+null_dist_theory <- gss |>
+  specify(response = finrela) |>
+  assume("Chisq")
+```
+
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+```{r}
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Alternatively, visualizing the observed statistic using both of the null distributions,
+```{r}
+visualize(null_dist_theory, method = "both") +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Alternatively, using the chisq_test wrapper:
+```{r}
+chisq_test(
+  gss,
+  response = finrela,
+  p = c(
+    "far below average" = 1 / 6,
+    "below average" = 1 / 6,
+    "average" = 1 / 6,
+    "above average" = 1 / 6,
+    "far above average" = 1 / 6,
+    "DK" = 1 / 6
+  )
+)
+```
+
+#Two categorical (>2 level): Chi-squared test of independence
+Calculating the observed statistic,
+```{r}
+Chisq_hat <- gss |>
+  specify(formula = finrela ~ sex) |> 
+  hypothesize(null = "independence") |>
+  calculate(stat = "Chisq")
+
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+Chisq_hat <- gss |>
+  observe(formula = finrela ~ sex, stat = "Chisq")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(finrela ~ sex) |>
+  hypothesize(null = "independence") |> 
+  generate(reps = 1000, type = "permute") |> 
+  calculate(stat = "Chisq")
+```
+
+Alternatively, finding the null distribution using theoretical methods using the `assume()` verb,
+```{r}
+null_dist_theory <- gss |>
+  specify(finrela ~ sex) |>
+  assume(distribution = "Chisq")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+```{r}
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Alternatively, visualizing the observed statistic using both of the null distributions,
+```{r}
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = Chisq_hat, direction = "greater")
+```
+
+Alternatively, using the wrapper to carry out the test,
+```{r}
+gss |>
+  chisq_test(formula = finrela ~ sex)
+```
+
+# One numerical variable, one categorical (2 levels) (diff in means)
+Calculating the observed statistic,
+```{r}
+d_hat <- gss |> 
+  specify(age ~ college) |> 
+  calculate(stat = "diff in means", order = c("degree", "no degree"))
+```
+
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+d_hat <- gss |> 
+  observe(age ~ college,
+          stat = "diff in means", order = c("degree", "no degree"))
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(age ~ college) |>
+  hypothesize(null = "independence") |>
+  generate(reps = 1000, type = "permute") |>
+  calculate(stat = "diff in means", order = c("degree", "no degree"))
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = d_hat, direction = "two-sided")
+
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = d_hat, direction = "two-sided")
+```
+# One numerical variable, one categorical (2 levels) (t)
+Finding the standardized observed statistic, alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+t_hat <- gss |> 
+  specify(age ~ college) |> 
+  hypothesize(null = "independence") |>
+  calculate(stat = "t", order = c("degree", "no degree"))
+
+t_hat <- gss |> 
+  observe(age ~ college,
+          stat = "t", order = c("degree", "no degree"))
+```
+
+Then, generating the null distribution, alternatively, finding the null distribution using theoretical methods using the assume() verb,
+```{r}
+null_dist <- gss |>
+  specify(age ~ college) |>
+  hypothesize(null = "independence") |>
+  generate(reps = 1000, type = "permute") |>
+  calculate(stat = "t", order = c("degree", "no degree"))
+null_dist_theory <- gss |>
+  specify(age ~ college) |>
+  assume("t")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+Alternatively, visualizing the observed statistic using both of the null distributions,
+
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = t_hat, direction = "two-sided")
+
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = t_hat, direction = "two-sided")
+
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = t_hat, direction = "two-sided")
+
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = t_hat, direction = "two-sided")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = t_hat, direction = "two-sided")
+```
+
+Note the similarities in this plot and the previous one.
+
+# One numerical variable, one categorical (2 levels) (diff in medians)
+Calculating the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+d_hat <- gss |> 
+  specify(age ~ college) |> 
+  calculate(stat = "diff in medians", order = c("degree", "no degree"))
+
+d_hat <- gss |> 
+  observe(age ~ college,
+          stat = "diff in medians", order = c("degree", "no degree"))
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+  specify(age ~ college) |> # alt: response = age, explanatory = season
+  hypothesize(null = "independence") |>
+  generate(reps = 1000, type = "permute") |>
+  calculate(stat = "diff in medians", order = c("degree", "no degree"))
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = d_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = d_hat, direction = "two-sided")
+```
+
+# One numerical, one categorical (>2 levels) - ANOVA
+Calculating the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+F_hat <- gss |> 
+  specify(age ~ partyid) |>
+  calculate(stat = "F")
+
+
+F_hat <- gss |> 
+  observe(age ~ partyid, stat = "F")
+```
+
+Then, generating the null distribution,
+Alternatively, finding the null distribution using theoretical methods using the assume() verb,
+```{r}
+null_dist <- gss |>
+   specify(age ~ partyid) |>
+   hypothesize(null = "independence") |>
+   generate(reps = 1000, type = "permute") |>
+   calculate(stat = "F")
+null_dist_theory <- gss |>
+   specify(age ~ partyid) |>
+   hypothesize(null = "independence") |>
+   assume(distribution = "F")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+Alternatively, visualizing the observed statistic using the theory-based null distribution,
+Alternatively, visualizing the observed statistic using both of the null distributions,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = F_hat, direction = "greater")
+visualize(null_dist_theory) +
+  shade_p_value(obs_stat = F_hat, direction = "greater")
+visualize(null_dist, method = "both") +
+  shade_p_value(obs_stat = F_hat, direction = "greater")
+```
+
+Note that the above code makes use of the randomization-based null distribution.
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = F_hat, direction = "greater")
+```
+```{r}
+## # A tibble: 1 × 1
+##   p_value
+##     <dbl>
+## 1   0.045
+```
+
+
+# Two numerical vars - SLR
+Calculating the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+slope_hat <- gss |> 
+  specify(hours ~ age) |> 
+  calculate(stat = "slope")
+slope_hat <- gss |> 
+  observe(hours ~ age, stat = "slope")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+   specify(hours ~ age) |> 
+   hypothesize(null = "independence") |>
+   generate(reps = 1000, type = "permute") |>
+   calculate(stat = "slope")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = slope_hat, direction = "two-sided")
+```
+
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = slope_hat, direction = "two-sided")
+```
+
+#Two numerical vars - correlation
+Calculating the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+correlation_hat <- gss |> 
+  specify(hours ~ age) |> 
+  calculate(stat = "correlation")
+correlation_hat <- gss |> 
+  observe(hours ~ age, stat = "correlation")
+```
+
+Then, generating the null distribution,
+```{r}
+null_dist <- gss |>
+   specify(hours ~ age) |> 
+   hypothesize(null = "independence") |>
+   generate(reps = 1000, type = "permute") |>
+   calculate(stat = "correlation")
+```
+
+Visualizing the observed statistic alongside the null distribution,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = correlation_hat, direction = "two-sided")
+```
+Calculating the p-value from the null distribution and observed statistic,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = correlation_hat, direction = "two-sided")
+```
+
+# Two numerical vars - SLR (t)
+Not currently implemented since t could refer to standardized slope or standardized correlation.
+
+# Multiple explanatory variables
+Calculating the observed fit,
+```{r}
+obs_fit <- gss |>
+  specify(hours ~ age + college) |>
+  fit()
+```
+
+Generating a distribution of fits with the response variable permuted,
+```{r}
+null_dist <- gss |>
+  specify(hours ~ age + college) |>
+  hypothesize(null = "independence") |>
+  generate(reps = 1000, type = "permute") |>
+  fit()
+```
+
+Generating a distribution of fits where each explanatory variable is permuted independently,
+```{r}
+null_dist2 <- gss |>
+  specify(hours ~ age + college) |>
+  hypothesize(null = "independence") |>
+  generate(reps = 1000, type = "permute", variables = c(age, college)) |>
+  fit()
+```
+
+Visualizing the observed fit alongside the null fits,
+```{r}
+visualize(null_dist) +
+  shade_p_value(obs_stat = obs_fit, direction = "two-sided")
+```
+
+Calculating p-values from the null distribution and observed fit,
+```{r}
+null_dist |>
+  get_p_value(obs_stat = obs_fit, direction = "two-sided")
+```
+
+```{r}
+## # A tibble: 3 × 2
+##   term          p_value
+##   <chr>           <dbl>
+## 1 age             0.914
+## 2 collegedegree   0.266
+## 3 intercept       0.734
+```
+
+Note that this `fit()`-based workflow can be applied to use cases with differing numbers of explanatory variables and explanatory variable types.
+
+# Confidence intervals One numerical (one mean)
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+x_bar <- gss |> 
+  specify(response = hours) |>
+  calculate(stat = "mean")
+x_bar <- gss |> 
+  observe(response = hours, stat = "mean")
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+   specify(response = hours) |>
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "mean")
+```
+
+Use the bootstrap distribution to find a confidence interval,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+```
+
+Visualizing the observed statistic alongside the distribution,
+```{r}
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- get_ci(boot_dist, type = "se", point_estimate = x_bar)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+Instead of a simulation-based bootstrap distribution, we can also define a theory-based sampling distribution,
+Visualization and calculation of confidence intervals interfaces in the same way as with the simulation-based distribution,
+```{r}
+sampling_dist <- gss |>
+   specify(response = hours) |>
+   assume(distribution = "t")
+theor_ci <- get_ci(sampling_dist, point_estimate = x_bar)
+theor_ci
+```
+```{r}
+visualize(sampling_dist) +
+  shade_confidence_interval(endpoints = theor_ci)
+```
+
+Note that the t distribution is recentered and rescaled to lie on the scale of the observed data. `infer` does not support confidence intervals on means via the z distribution.
+
+# One numerical (one mean - standardized)
+- Finding the observed statistic,
+- Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+t_hat <- gss |> 
+  specify(response = hours) |>
+  hypothesize(null = "point", mu = 40) |>
+  calculate(stat = "t")
+t_hat <- gss |> 
+  observe(response = hours,
+          null = "point", mu = 40,
+          stat = "t")
+```
+
+Then, generating the bootstrap distribution,
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+boot_dist <- gss |>
+   specify(response = hours) |>
+   # hypothesize(null="point", mu=40) %>% 
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "t")
+
+percentile_ci <- get_ci(boot_dist)
+percentile_ci
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+# Wrong 1
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+
+<a name="wrong1">
+This is obviously wrong. I think the problem is that the boot_dist has mean 40 and is not in standard error terms.
+```{r}
+boot_dist %>% glimpse
+t_hat %>% glimpse
+
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = t_hat)
+
+standard_error_ci
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+
+```
+
+>type   A string giving which method should be used for creating the confidence interval. The default is "percentile" with "se" corresponding to (multiplier * standard error) and "bias-corrected" for bias-corrected interval as other options.
+
+>A null hypothesis is not required to compute a confidence interval. However, including hypothesize() in a pipeline leading to get_confidence_interval() will not break anything. This can be useful when computing a confidence interval using the same distribution used to compute a p-value.
+
+Is this a bug in the `get_ci()` function with 'type="se"'
+</a>
+
+See the above subsection (one mean) for a theory-based approach. Note that infer does not support confidence intervals on means via the z distribution.
+
+# One categorical (one proportion)
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+p_hat <- gss |> 
+   specify(response = sex, success = "female") |>
+   calculate(stat = "prop")
+p_hat <- gss |> 
+   observe(response = sex, success = "female", stat = "prop")
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+ specify(response = sex, success = "female") |>
+ generate(reps = 1000, type = "bootstrap") |>
+ calculate(stat = "prop")
+```
+
+Use the bootstrap distribution to find a confidence interval,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+```
+Visualizing the observed statistic alongside the distribution,
+
+```{r}
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = p_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+
+Instead of a simulation-based bootstrap distribution, we can also define a theory-based sampling distribution,
+```{r}
+sampling_dist <- gss |>
+   specify(response = sex, success = "female") |>
+   assume(distribution = "z")
+```
+
+Visualization and calculation of confidence intervals interfaces in the same way as with the simulation-based distribution,
+```{r}
+theor_ci <- get_ci(sampling_dist, point_estimate = p_hat)
+
+theor_ci
+
+visualize(sampling_dist) +
+  shade_confidence_interval(endpoints = theor_ci)
+```
+
+Note that the z distribution is recentered and rescaled to lie on the scale of the observed data. `infer` does not support confidence intervals on means via the z distribution.
+
+# One categorical variable (standardized proportion z)
+See the above subsection (one proportion) for a theory-based approach.
+
+#One numerical variable, one categorical (2 levels) (diff in means)
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+d_hat <- gss |>
+  specify(hours ~ college) |>
+  calculate(stat = "diff in means", order = c("degree", "no degree"))
+d_hat <- gss |>
+  observe(hours ~ college,
+          stat = "diff in means", order = c("degree", "no degree"))
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+   specify(hours ~ college) |>
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "diff in means", order = c("degree", "no degree"))
+```
+
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = d_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+
+Instead of a simulation-based bootstrap distribution, we can also define a theory-based sampling distribution,
+Visualization and calculation of confidence intervals interfaces in the same way as with the simulation-based distribution,
+```{r}
+sampling_dist <- gss |>
+   specify(hours ~ college) |>
+   assume(distribution = "t")
+theor_ci <- get_ci(sampling_dist, point_estimate = d_hat)
+
+theor_ci
+visualize(sampling_dist) +
+  shade_confidence_interval(endpoints = theor_ci)
+```
+
+Note that the t distribution is recentered and rescaled to lie on the scale of the observed data.
+
+`infer` also provides functionality to calculate ratios of means. The workflow looks similar to that for `diff in means`.
+
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+d_hat <- gss |>
+  specify(hours ~ college) |>
+  calculate(stat = "ratio of means", order = c("degree", "no degree"))
+d_hat <- gss |>
+  observe(hours ~ college,
+          stat = "ratio of means", order = c("degree", "no degree"))
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+   specify(hours ~ college) |>
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "ratio of means", order = c("degree", "no degree"))
+```
+
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = d_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+
+```
+# One numerical variable, one categorical (2 levels) (t)
+Finding the standardized point estimate,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+t_hat <- gss |>
+  specify(hours ~ college) |>
+  calculate(stat = "t", order = c("degree", "no degree"))
+t_hat <- gss |>
+  observe(hours ~ college,
+          stat = "t", order = c("degree", "no degree"))
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+   specify(hours ~ college) |>
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "t", order = c("degree", "no degree"))
+```
+
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = t_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+See the above subsection (diff in means) for a theory-based approach. `infer` does not support confidence intervals on means via the z distribution.
+
+# Two categorical variables (z)
+Finding the standardized point estimate,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+z_hat <- gss |> 
+  specify(college ~ sex, success = "degree") |>
+  calculate(stat = "z", order = c("female", "male"))
+z_hat <- gss |> 
+  observe(college ~ sex, success = "degree",
+          stat = "z", order = c("female", "male"))
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+  specify(college ~ sex, success = "degree") |>
+  generate(reps = 1000, type = "bootstrap") |> 
+  calculate(stat = "z", order = c("female", "male"))
+```
+
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = z_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+See the above subsection (diff in props) for a theory-based approach.
+
+# Two numerical vars - SLR
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+slope_hat <- gss |> 
+  specify(hours ~ age) |>
+  calculate(stat = "slope")
+
+slope_hat <- gss |> 
+  observe(hours ~ age, stat = "slope")
+```
+
+Then, generating a bootstrap distribution,
+```{r}
+boot_dist <- gss |>
+   specify(hours ~ age) |> 
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "slope")
+```
+
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = slope_hat)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+
+# Two numerical vars - correlation
+Finding the observed statistic,
+Alternatively, using the observe() wrapper to calculate the observed statistic,
+```{r}
+correlation_hat <- gss |> 
+  specify(hours ~ age) |>
+  calculate(stat = "correlation")
+correlation_hat <- gss |> 
+  observe(hours ~ age, stat = "correlation")
+```
+
+Then, generating a bootstrap distribution,
+Use the bootstrap distribution to find a confidence interval,
+Visualizing the observed statistic alongside the distribution,
+```{r}
+boot_dist <- gss |>
+   specify(hours ~ age) |> 
+   generate(reps = 1000, type = "bootstrap") |>
+   calculate(stat = "correlation")
+percentile_ci <- get_ci(boot_dist)
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = percentile_ci)
+```
+
+Alternatively, use the bootstrap distribution to find a confidence interval using the standard error,
+```{r}
+standard_error_ci <- boot_dist |>
+  get_ci(type = "se", point_estimate = correlation_hat)
+
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = standard_error_ci)
+```
+
+# Two numerical vars - t
+Not currently implemented since t could refer to standardized slope or standardized correlation.
+
+# Multiple explanatory variables
+Calculating the observed fit,
+```{r}
+obs_fit <- gss |>
+  specify(hours ~ age + college) |>
+  fit()
+```
+
+Then, generating a bootstrap distribution,
+Use the bootstrap distribution to find a confidence interval,
+```{r}
+boot_dist <- gss |>
+  specify(hours ~ age + college) |>
+  generate(reps = 1000, type = "bootstrap") |>
+  fit()
+conf_ints <- 
+  get_confidence_interval(
+    boot_dist, 
+    level = .95, 
+    point_estimate = obs_fit
+  )
+```
+
+Visualizing the observed statistic alongside the distribution,
+```{r}
+visualize(boot_dist) +
+  shade_confidence_interval(endpoints = conf_ints)
+```
+Note that this fit()-based workflow can be applied to use cases with differing numbers of explanatory variables and explanatory variable types.
+
+# References
+:::{#r1}
+The `infer` package. (https://infer.tidymodels.org/)
+
+:::{#r2}
+Full `infer` pipeline examples. (https://infer.tidymodels.org/articles/observed_stat_examples.html)
+
+# Errors
+:::{#e1}
+[One numerical](#wrong1)
