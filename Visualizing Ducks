@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizing Ducks – Bruce Hartman</title>
+</head>
+<body>
+
+    <header>
+        <h1>Visualizing Ducks</h1>
+        <p><strong>Author:</strong> Bruce Hartman</p>
+        <p><strong>Date:</strong> July 12, 2020</p>
+        <p><strong>Category:</strong> Outdoors | <strong>Tags:</strong> analytics, ducks, nature</p>
+    </header>
+
+    <hr>
+
+    <main>
+        <section>
+            <h2>Overview &amp; Project Intent</h2>
+            <p>We have a lot of ducks, mostly mallards, on the trail near here. I’ve been snapping pics of them as we walk the trail. I’m wondering where the ducks tend to be. Are they evenly distributed, using the entire stream, or do they favor particular places?</p>
+            <p>My goal is to map duck sightings along the trail over the course of a year, followed by a second year of data collection.</p>
+        </section>
+
+        <section>
+            <h2>Data Collection &amp; Workflow</h2>
+            <ol>
+                <li>
+                    <strong>Capturing Data:</strong> 
+                    Photos of ducks were taken along the trail and uploaded to a <a href="https://photos.google.com/album/AF1QipPyN9W1hkexrjuMa6yke5NgRai2e-Rzpf7XmFYl">Google Photos album</a>.
+                </li>
+                <li>
+                    <strong>Extracting Metadata:</strong> 
+                    Used <a href="https://takeout.google.com/settings/takeout/">Google Takeout</a> to download batch metadata (latitude, longitude, date, and time) contained in JSON files for the duck album.
+                </li>
+                <li>
+                    <strong>Data Conversion:</strong> 
+                    Wrote a custom PHP program to extract the required JSON metadata and convert it into XML tags for a GPX file.
+                </li>
+                <li>
+                    <strong>Mapping &amp; Visualization:</strong> 
+                    Uploaded the generated GPX file into <a href="https://www.google.com/maps/d/u/0/">Google MyMaps</a> to plot the sightings on a <a href="https://www.google.com/maps/d/drive?state=%7B%22ids%22%3A%5B%221V8akfs6BQvXyQvGC20ZiYq6iiJxb5yo6%22%5D%2C%22action%22%3A%22open%22%2C%22userId%22%3A%22107777829305010016037%22%7D&amp;usp=sharing">Google satellite map</a>.
+                </li>
+            </ol>
+        </section>
+    </main>
+
+    <hr>
+
+    <footer>
+        <p>&copy; 2020 Bruce Hartman</p>
+    </footer>
+
+</body>
+</html>
